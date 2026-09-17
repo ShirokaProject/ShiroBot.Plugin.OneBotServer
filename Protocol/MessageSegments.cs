@@ -16,7 +16,7 @@ public static class MessageSegments
         QIncomingImage value => Segment("image", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("summary", value.Summary), ("sub_type", value.SubType)),
         QIncomingRecord value => Segment("record", ("file", value.ResourceId), ("url", value.TempUrl), ("duration", (long)value.Duration.TotalSeconds)),
         QIncomingVideo value => Segment("video", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("duration", (long)value.Duration.TotalSeconds)),
-        QIncomingFile value => Segment("file", ("file", value.FileName), ("file_id", value.FileId), ("file_size", value.FileSize.ToString(CultureInfo.InvariantCulture)), ("name", value.FileName)),
+        QIncomingFile value => Segment("file", ("file", value.FileName), ("file_id", value.FileId), ("fid", value.FileId), ("file_size", value.FileSize.ToString(CultureInfo.InvariantCulture)), ("name", value.FileName)),
         QIncomingForward value => Segment("forward", ("id", value.ForwardId), ("title", value.Title), ("preview", value.Preview), ("summary", value.Summary)),
         QIncomingLightApp value => Segment("json", ("data", value.JsonPayload), ("app_name", value.AppName)),
         QIncomingXml value => Segment("xml", ("data", value.XmlPayload), ("service_id", value.ServiceId)),

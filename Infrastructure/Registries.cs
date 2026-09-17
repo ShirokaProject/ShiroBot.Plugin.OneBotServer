@@ -9,6 +9,22 @@ public sealed class PrivateFileRegistry(int maxEntries = 10_000)
     public bool TryResolve(string fileId, out PrivateFileReference? reference) => entries.TryGet(fileId, out reference);
 }
 
+/// <summary>Remembers which group a OneBot file id belongs to, matching LLOneBot's file cache behaviour.</summary>
+public sealed record GroupFileReference(long GroupId, string FileName, long FileSize);
+
+public sealed class GroupFileRegistry(int maxEntries = 10_000)
+{
+    private readonly BoundedRegistry<string, GroupFileReference> entries = new(maxEntries);
+
+    public void Remember(string fileId, GroupFileReference reference)
+    {
+        if (string.IsNullOrWhiteSpace(fileId)) return;
+        entries.Set(fileId, reference);
+    }
+
+    public bool TryResolve(string fileId, out GroupFileReference? reference) => entries.TryGet(fileId, out reference);
+}
+
 public sealed class ReactionRegistry(int maxEntries = 10_000)
 {
     private readonly BoundedRegistry<(long GroupId, long Sequence, string EmojiId, long UserId), byte> entries = new(maxEntries);

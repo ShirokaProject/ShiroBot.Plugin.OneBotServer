@@ -269,6 +269,32 @@ public sealed class OneBotActionDispatcherTests
     }
 
     [TestMethod]
+    public async Task FileActions_ResolveRememberedGroupAndPrivateFilesWithoutExtraIds()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var facade = new RecordingFacade();
+        var state = await CreateStateAsync(directory);
+        var dispatcher = new OneBotActionDispatcher(facade, state);
+        state.GroupFiles.Remember("/group-file", new GroupFileReference(915449089, "283622490.json", 929603));
+        state.Files.Remember("/private-file", new PrivateFileReference(20002, "hash", false));
+
+        var groupUrl = await dispatcher.DispatchAsync(Request("get_group_file_url", """{"file_id":"/group-file"}"""));
+        var groupFile = await dispatcher.DispatchAsync(Request("get_file", """{"file_id":"/group-file","download":false}"""));
+        var privateUrl = await dispatcher.DispatchAsync(Request("get_private_file_url", """{"file_id":"/private-file"}"""));
+
+        Assert.AreEqual(0, groupUrl.RetCode);
+        Assert.AreEqual(0, groupFile.RetCode);
+        Assert.AreEqual(0, privateUrl.RetCode);
+        Assert.AreEqual((915449089L, "/group-file"), facade.GroupFile);
+        Assert.AreEqual((20002L, "/private-file", "hash", false), facade.PrivateFile);
+        var payload = JsonSerializer.SerializeToElement(groupFile.Data);
+        Assert.AreEqual("https://example.test/group", payload.GetProperty("url").GetString());
+        Assert.AreEqual("283622490.json", payload.GetProperty("file_name").GetString());
+        Assert.AreEqual("929603", payload.GetProperty("file_size").GetString());
+        if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+    }
+
+    [TestMethod]
     public async Task SentMessageId_IsPersistedAndResolvedForDeleteAndGet()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -426,6 +452,7 @@ public sealed class OneBotActionDispatcherTests
         public Channel? GetChannel { get; private set; }
         public string? DeletedMessageId { get; private set; }
         public (long, string, string, bool) PrivateFile { get; private set; }
+        public (long GroupId, string FileId) GroupFile { get; private set; }
         public bool CacheCleaned { get; private set; }
         public string StoragePath { get; init; } = Path.Combine(Path.GetTempPath(), "onebot-tests");
         public string? Avatar { get; private set; }
@@ -476,7 +503,8 @@ public sealed class OneBotActionDispatcherTests
         public override Task MoveGroupFileAsync(long groupId, string fileId, string targetFolderId, string parentFolderId) { Move = (groupId, fileId, targetFolderId, parentFolderId); return Task.CompletedTask; }
         public override Task RenameGroupFileAsync(long groupId, string fileId, string name, string parentFolderId) { Rename = (groupId, fileId, name, parentFolderId); return Task.CompletedTask; }
         public override Task PersistGroupFileAsync(long groupId, string fileId) { Persist = (groupId, fileId); return Task.CompletedTask; }
-        public override Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend) { PrivateFile = (userId, fileId, fileHash, isSelfSend); return Task.FromResult("url"); }
+        public override Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend) { PrivateFile = (userId, fileId, fileHash, isSelfSend); return Task.FromResult("https://example.test/private"); }
+        public override Task<string> GetGroupFileUrlAsync(long groupId, string fileId) { GroupFile = (groupId, fileId); return Task.FromResult("https://example.test/group"); }
         public override Task<bool> CanSendImageAsync() => Task.FromResult(true);
         public override Task<bool> CanSendRecordAsync() => Task.FromResult(true);
         public override Task<object?> GetStatusAsync() => Task.FromResult<object?>(new { online = true, good = true });

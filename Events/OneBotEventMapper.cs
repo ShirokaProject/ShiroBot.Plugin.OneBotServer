@@ -105,7 +105,7 @@ public static class OneBotEventMapper
             QGroupMessageReaction reaction => Notice(platform, "group_msg_emoji_like", Add(Add(Add(Add(Add(data, "group_id", reaction.GroupId), "user_id", reaction.UserId), "message_id", reaction.MessageSeq), "likes", new[] { new Dictionary<string, object?> { ["code"] = reaction.FaceId, ["count"] = 1 } }), "is_add", reaction.IsAdd)),
             QGroupMute mute => Notice(platform, "group_ban", data, mute.IsUnmute ? "lift_ban" : "ban") with { Data = Add(Add(Add(Add(data, "group_id", mute.GroupId), "user_id", mute.UserId), "operator_id", mute.OperatorId), "duration", (long)mute.Duration.TotalSeconds) },
             QGroupWholeMute mute => Notice(platform, "group_ban", data, mute.IsMute ? "ban" : "lift_ban") with { Data = Add(Add(Add(Add(data, "group_id", mute.GroupId), "user_id", 0L), "operator_id", mute.OperatorId), "duration", 0L) },
-            QGroupFileUpload file => Notice(platform, "group_upload", data) with { Data = Add(Add(Add(data, "group_id", file.GroupId), "user_id", file.UserId), "file", new Dictionary<string, object?> { ["id"] = file.FileId, ["name"] = file.FileName, ["size"] = file.FileSize, ["busid"] = 0 }) },
+            QGroupFileUpload file => Notice(platform, "group_upload", data) with { Data = Add(Add(Add(data, "group_id", file.GroupId), "user_id", file.UserId), "file", new Dictionary<string, object?> { ["id"] = file.FileId, ["fid"] = file.FileId, ["name"] = file.FileName, ["size"] = file.FileSize, ["busid"] = 0 }) },
             QGroupJoinRequest request => Request(platform, "group", Add(Add(Add(Add(data, "group_id", request.GroupId), "user_id", request.InitiatorId), "comment", request.Comment), "flag", RequestFlagCodec.Encode(new RequestFlag("group", request.GroupId, request.NotificationSeq, Filtered: request.IsFiltered, RequestType: "join_request")))) with { SubType = "add" },
             QGroupInvitedJoinRequest request => Request(platform, "group", Add(Add(Add(data, "group_id", request.GroupId), "user_id", request.InitiatorId), "flag", RequestFlagCodec.Encode(new RequestFlag("group", request.GroupId, request.NotificationSeq, RequestType: "invited_join_request")))) with { SubType = "add" },
             QGroupDisband disband => Notice(platform, "group_dismiss", Add(Add(data, "group_id", disband.GroupId), "operator_id", disband.OperatorId)),
@@ -144,6 +144,7 @@ public static class OneBotEventMapper
         {
             ["file"] = name,
             ["file_id"] = id,
+            ["fid"] = id,
             ["file_size"] = file.FileSize?.ToString(CultureInfo.InvariantCulture),
             ["name"] = file.FileName
         });

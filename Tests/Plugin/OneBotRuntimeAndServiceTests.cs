@@ -138,6 +138,33 @@ public sealed class OneBotRuntimeAndServiceTests
     }
 
     [TestMethod]
+    public async Task Runtime_GroupUploadNoticeCarriesFidAndResolvedUrl()
+    {
+        const long groupId = 915449089;
+        const string fileId = "/5ba27ec9-8570-4c05-b5fd-f95df938e5f1";
+        const string url = "https://example.test/283622490.json";
+        var facade = new RuntimeFacade { GroupFileUrl = url };
+        var runtime = new OneBotServerRuntime(facade, Path.GetTempPath());
+        var source = new PlatformEvent
+        {
+            Platform = "qq", SelfId = "3900952625", Kind = nameof(QGroupFileUpload),
+            Raw = new QGroupFileUpload
+            {
+                SelfId = 3900952625, GroupId = groupId, UserId = 1034028486, FileId = fileId, FileName = "283622490.json", FileSize = 929603
+            }
+        };
+        var mapped = OneBotEventMapper.Map(source, new OneBotEventFormatConfig());
+
+        var enriched = await runtime.EnrichGroupFileUrlsAsync(source, mapped, CancellationToken.None);
+
+        Assert.AreEqual("group_upload", enriched.NoticeType);
+        var file = (Dictionary<string, object?>)enriched.Data["file"]!;
+        Assert.AreEqual(fileId, file["fid"]);
+        Assert.AreEqual(url, file["url"]);
+        Assert.AreEqual((groupId, fileId), facade.GroupFileUrlRequest);
+    }
+
+    [TestMethod]
     public void Configuration_ExposesRegistryRequestSecretAndHttpTargetSecret()
     {
         var config = new OneBotServerConfig

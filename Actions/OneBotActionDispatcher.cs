@@ -266,7 +266,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "upload_private_file": return new { file_id = await context.UploadPrivateFileAsync(Id(p, "user_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file")) };
             case "get_group_root_files": return await context.GetGroupFilesAsync(Id(p, "group_id"), "/");
             case "get_group_files_by_folder": return await context.GetGroupFilesAsync(Id(p, "group_id"), FirstString(p, ["folder_id", "parent_folder_id"]));
-            case "get_group_file_url": return new { url = await context.GetGroupFileUrlAsync(Id(p, "group_id"), FirstString(p, ["file_id", "file"])) };
+            case "get_group_file_url": return await GetGroupFileUrlAsync(p);
             case "get_private_file_url":
                 var fileId = FirstString(p, ["file_id", "file"]);
                 var file = ResolvePrivateFile(p, fileId);
@@ -477,6 +477,38 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return new { file_count = fileIds.Count, limit_count = 0, used_space = usedSpace, total_space = 0 };
     }
 
+    private async Task<object> GetGroupFileUrlAsync(IReadOnlyDictionary<string, JsonElement> p)
+    {
+        var fileId = FirstString(p, ["file_id", "file"]);
+        var groupId = OptionalId(p, "group_id") ?? ResolveRememberedGroupFile(fileId)?.GroupId
+            ?? throw new OneBotParameterException("group_id is required for get_group_file_url when the file id is not remembered.");
+        var url = await ResolveGroupFileUrlAsync(groupId, fileId).ConfigureAwait(false);
+        return new { url };
+    }
+
+    private GroupFileReference? ResolveRememberedGroupFile(string fileId) =>
+        state is not null && state.GroupFiles.TryResolve(fileId, out var reference) ? reference : null;
+
+    private async Task<string> ResolveGroupFileUrlAsync(long groupId, string fileId)
+    {
+        try
+        {
+            var url = await context.GetGroupFileUrlAsync(groupId, fileId).ConfigureAwait(false);
+            BotLog.Log($"[OneBot/File] get_group_file_url 成功，group_id={groupId}，file_id={SafeFileId(fileId)}。");
+            return url;
+        }
+        catch (NotSupportedException exception)
+        {
+            BotLog.Warning($"[OneBot/File] 当前 Adapter 不支持获取群文件链接，group_id={groupId}，file_id={SafeFileId(fileId)}：{exception.Message}");
+            throw;
+        }
+        catch (Exception exception)
+        {
+            BotLog.Error($"[OneBot/File] 获取群文件链接失败，group_id={groupId}，file_id={SafeFileId(fileId)}，{exception.GetType().Name}: {exception.Message}");
+            throw;
+        }
+    }
+
     private async Task<object?> GetFileAsync(IReadOnlyDictionary<string, JsonElement> p, CancellationToken cancellationToken)
     {
         var fileId = FirstString(p, ["file", "file_id"]);
@@ -484,22 +516,37 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         var download = Bool(p, "download", true);
         string url;
         PrivateFileReference? remembered = null;
-        if (OptionalId(p, "group_id") is long groupId) url = await context.GetGroupFileUrlAsync(groupId, fileId);
+        var rememberedGroupFile = ResolveRememberedGroupFile(fileId);
+        if (OptionalId(p, "group_id") is not null || rememberedGroupFile is not null)
+        {
+            var group = OptionalId(p, "group_id") ?? rememberedGroupFile!.GroupId;
+            url = await ResolveGroupFileUrlAsync(group, fileId).ConfigureAwait(false);
+            if (!download)
+            {
+                var inlineName = requestedName ?? rememberedGroupFile?.FileName ?? Path.GetFileName(url);
+                BotLog.Log($"[OneBot/File] get_file(download=false) 返回链接，group_id={group}，file_id={SafeFileId(fileId)}。");
+                return new { file = string.Empty, url, file_size = (rememberedGroupFile?.FileSize ?? 0).ToString(), file_name = inlineName };
+            }
+        }
         else if (state?.Files.TryResolve(fileId, out remembered) == true || p.ContainsKey("user_id") || p.ContainsKey("file_hash") || p.ContainsKey("hash"))
         {
             var privateFile = remembered ?? ResolvePrivateFile(p, fileId);
-            url = await context.GetPrivateFileUrlAsync(privateFile.UserId, fileId, privateFile.FileHash, privateFile.IsSelfSend);
+            url = await context.GetPrivateFileUrlAsync(privateFile.UserId, fileId, privateFile.FileHash, privateFile.IsSelfSend).ConfigureAwait(false);
         }
         else if (files.TryGetStoredFile(fileId, out var stored))
         {
+            BotLog.Log($"[OneBot/File] get_file 命中本地缓存，file_id={SafeFileId(fileId)}。");
             return new { file = download ? stored : string.Empty, url = string.Empty, file_size = new FileInfo(stored).Length.ToString(), file_name = Path.GetFileName(stored) };
         }
         else if (Uri.TryCreate(fileId, UriKind.Absolute, out var direct) && direct.Scheme is "http" or "https") url = fileId;
-        else url = await context.GetResourceUrlAsync(fileId);
+        else url = await context.GetResourceUrlAsync(fileId).ConfigureAwait(false);
 
-        var result = await files.StoreFromUrlAsync(url, requestedName, download, cancellationToken);
+        var result = await files.StoreFromUrlAsync(url, requestedName, download, cancellationToken).ConfigureAwait(false);
+        BotLog.Log($"[OneBot/File] get_file 完成，file_id={SafeFileId(fileId)}，url={(string.IsNullOrWhiteSpace(url) ? "(empty)" : "ok")}，file={result.File}。");
         return new { file = result.File, url, file_size = result.Size.ToString(), file_name = result.Name };
     }
+
+    private static string SafeFileId(string fileId) => fileId.Length <= 160 ? fileId : fileId[..160] + "...";
 
     private async Task<int> RegisterMessageAsync(Channel channel, string nativeId)
     {

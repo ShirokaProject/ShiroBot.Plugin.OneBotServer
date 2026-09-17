@@ -10,6 +10,7 @@ public sealed class OneBotRuntimeState
     {
         Messages = messages;
         Files = new PrivateFileRegistry(maxEntries);
+        GroupFiles = new GroupFileRegistry(maxEntries);
         Reactions = new ReactionRegistry(maxEntries);
         Events = new EventQueue<OneBotEvent>(eventQueueCapacity);
         RequestFlagKey = requestFlagKey;
@@ -17,6 +18,7 @@ public sealed class OneBotRuntimeState
 
     public MessageIdRegistry Messages { get; }
     public PrivateFileRegistry Files { get; }
+    public GroupFileRegistry GroupFiles { get; }
     public ReactionRegistry Reactions { get; }
     public EventQueue<OneBotEvent> Events { get; }
     public byte[] RequestFlagKey { get; }

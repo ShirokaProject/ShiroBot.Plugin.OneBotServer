@@ -206,6 +206,7 @@ public sealed class OneBotEventMapperTests
         Assert.AreEqual("group_upload", mapped.NoticeType);
         var file = (Dictionary<string, object?>)mapped.Data["file"]!;
         Assert.AreEqual("/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", file["id"]);
+        Assert.AreEqual("/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", file["fid"]);
         Assert.AreEqual("283622490.json", file["name"]);
         Assert.AreEqual(929603L, file["size"]);
         Assert.AreEqual(0, file["busid"]);

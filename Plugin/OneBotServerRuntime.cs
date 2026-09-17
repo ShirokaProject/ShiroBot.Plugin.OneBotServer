@@ -152,22 +152,41 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         OneBotEvent mapped,
         CancellationToken cancellationToken)
     {
-        var files = source switch
+        if (source is not MessageEvent { Raw: QIncomingMessage message })
         {
-            MessageEvent { Raw: QIncomingMessage message, Channel.Type: ChannelType.Group } =>
-                message.Segments.OfType<QIncomingFile>()
-                    .Select(file => (GroupId: message.PeerId, File: file))
-                    .ToArray(),
-            _ => []
-        };
+            // group_upload notices are spread into a file segment by clients (e.g. TRSS Yunzai),
+            // so the file object must carry a resolvable url and the legacy fid alias.
+            if (source is PlatformEvent { Raw: QGroupFileUpload upload })
+            {
+                var noticeData = new Dictionary<string, object?>(mapped.Data);
+                if (noticeData.TryGetValue("file", out var value) && value is IDictionary<string, object?> noticeFile)
+                {
+                    noticeFile["fid"] = upload.FileId;
+                    var noticeUrl = await TryResolveGroupFileUrlAsync(upload.GroupId, upload.FileId, cancellationToken).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(noticeUrl)) noticeFile["url"] = noticeUrl;
+                }
+                return mapped with { Data = noticeData };
+            }
+            return mapped;
+        }
 
+        var files = message.Segments.OfType<QIncomingFile>().ToArray();
         if (files.Length == 0) return mapped;
+
+        // Private file messages: remember the owner so get_file/get_private_file_url work without extra params.
+        if (message.Scene != QMessageScene.Group)
+        {
+            foreach (var file in files)
+                _state?.Files.Remember(file.FileId, new PrivateFileReference(message.PeerId, file.FileHash ?? string.Empty, message.SenderId == _selfId));
+            return mapped;
+        }
 
         var data = new Dictionary<string, object?>(mapped.Data);
         var urls = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var (groupId, file) in files)
+        foreach (var file in files)
         {
-            var url = await TryResolveGroupFileUrlAsync(groupId, file.FileId, cancellationToken).ConfigureAwait(false);
+            _state?.GroupFiles.Remember(file.FileId, new GroupFileReference(message.PeerId, file.FileName, file.FileSize));
+            var url = await TryResolveGroupFileUrlAsync(message.PeerId, file.FileId, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(url)) urls[file.FileId] = url;
         }
         if (urls.Count == 0) return mapped;
@@ -270,6 +289,10 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                 break;
             case PlatformEvent { Raw: QFriendFileUpload file }:
                 state.Files.Remember(file.FileId, new PrivateFileReference(file.UserId, file.FileHash ?? string.Empty, file.IsSelf));
+                break;
+            case PlatformEvent { Raw: QGroupFileUpload file }:
+                state.GroupFiles.Remember(file.FileId, new GroupFileReference(file.GroupId, file.FileName, file.FileSize));
+                BotLog.Log($"[OneBot/File] 记录群文件，group_id={file.GroupId}，file_id={SafeFileId(file.FileId)}，name={file.FileName}。");
                 break;
             case PlatformEvent { Raw: QGroupMessageReaction reaction }:
                 data["count"] = state.Reactions.Update(reaction.GroupId, reaction.MessageSeq, reaction.FaceId, reaction.UserId, reaction.IsAdd);

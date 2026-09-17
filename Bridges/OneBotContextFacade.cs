@@ -341,6 +341,7 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
         {
             ["file"] = file.FileName ?? file.Uri,
             ["file_id"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
+            ["fid"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
             ["file_size"] = file.FileSize?.ToString(CultureInfo.InvariantCulture),
             ["name"] = file.FileName
         }),
