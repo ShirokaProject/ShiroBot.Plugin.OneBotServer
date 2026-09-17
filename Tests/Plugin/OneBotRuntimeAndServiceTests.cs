@@ -2,6 +2,8 @@ using ShiroBot.Plugin.OneBotServer.Bridges;
 using ShiroBot.Plugin.OneBotServer.Configuration;
 using ShiroBot.Plugin.OneBotServer.Events;
 using ShiroBot.Plugin.OneBotServer.Plugin;
+using ShiroBot.Plugin.OneBotServer.Protocol;
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Plugin.OneBotServer.Tests.Plugin;
@@ -48,6 +50,91 @@ public sealed class OneBotRuntimeAndServiceTests
         Assert.IsTrue(registry.TryGet(new(Infrastructure.MessageScene.Group, 77, 88), out var messageId));
         Assert.AreEqual(1, messageId);
         Directory.Delete(directory, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task Runtime_GroupFilePassesMilkyFileIdUnchangedToDownloadUrlApi()
+    {
+        const long groupId = 915449089;
+        const string fileId = "/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8";
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var facade = new RuntimeFacade();
+        var runtime = new OneBotServerRuntime(facade, directory);
+        var config = DisabledConfig();
+        await runtime.StartAsync(config, CancellationToken.None);
+        var raw = new QGroupMessage
+        {
+            PeerId = groupId,
+            MessageSeq = 123,
+            SenderId = 1034028486,
+            Group = new QGroup { GroupId = groupId, GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = groupId, UserId = 1034028486, Nickname = "user" },
+            Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
+        };
+
+        await runtime.PublishAsync(new MessageEvent
+        {
+            Platform = "qq",
+            SelfId = "10001",
+            Raw = raw,
+            MessageId = "123",
+            Channel = Channel.Group(groupId.ToString()),
+            Sender = new User("1034028486"),
+            Segments = [new FileSegment(string.Empty) { FileName = "283622490.json", FileSize = 929603 }]
+        }, config.EventFormat, CancellationToken.None);
+
+        Assert.AreEqual((groupId, fileId), facade.GroupFileUrlRequest);
+        await runtime.StopAsync(CancellationToken.None);
+        Directory.Delete(directory, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task Runtime_GroupFileAddsDownloadUrlToArrayAndCqMessages()
+    {
+        const long groupId = 915449089;
+        const string fileId = "/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8";
+        const string url = "https://example.test/file.json";
+        var facade = new RuntimeFacade { GroupFileUrl = url };
+        var runtime = new OneBotServerRuntime(facade, Path.GetTempPath());
+        var raw = new QGroupMessage
+        {
+            PeerId = groupId,
+            MessageSeq = 123,
+            SenderId = 1034028486,
+            Group = new QGroup { GroupId = groupId, GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = groupId, UserId = 1034028486, Nickname = "user" },
+            Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
+        };
+        var source = new MessageEvent
+        {
+            Platform = "qq",
+            SelfId = "10001",
+            Raw = raw,
+            MessageId = "123",
+            Channel = Channel.Group(groupId.ToString()),
+            Sender = new User("1034028486"),
+            Segments = [new FileSegment(string.Empty) { FileName = "283622490.json", FileSize = 929603 }]
+        };
+
+        var arrayEvent = await runtime.EnrichGroupFileUrlsAsync(
+            source,
+            OneBotEventMapper.Map(source, new OneBotEventFormatConfig { UseArrayMessage = true }),
+            CancellationToken.None);
+        var segment = ((OneBotSegment[])arrayEvent.Data["message"]!).Single();
+        Assert.AreEqual(fileId, segment.Data["file_id"]);
+        Assert.AreEqual("283622490.json", segment.Data["file"]);
+        Assert.AreEqual("929603", segment.Data["file_size"]);
+        Assert.AreEqual(url, segment.Data["url"]);
+
+        var cqEvent = await runtime.EnrichGroupFileUrlsAsync(
+            source,
+            OneBotEventMapper.Map(source, new OneBotEventFormatConfig { UseArrayMessage = false }),
+            CancellationToken.None);
+        Assert.IsInstanceOfType(cqEvent.Data["message"], typeof(string));
+        var cq = (string)cqEvent.Data["message"]!;
+        StringAssert.Contains(cq, "file_id=/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8");
+        StringAssert.Contains(cq, "file=283622490.json");
+        StringAssert.Contains(cq, "url=https://example.test/file.json");
     }
 
     [TestMethod]
@@ -115,7 +202,14 @@ public sealed class OneBotRuntimeAndServiceTests
     private sealed class RuntimeFacade : OneBotContextFacadeBase
     {
         public int SelfIdCalls { get; private set; }
+        public (long GroupId, string FileId)? GroupFileUrlRequest { get; private set; }
+        public string GroupFileUrl { get; init; } = "https://example.test/file";
         public override Task<string> GetSelfIdAsync() { SelfIdCalls++; return Task.FromResult("10001"); }
+        public override Task<string> GetGroupFileUrlAsync(long groupId, string fileId)
+        {
+            GroupFileUrlRequest = (groupId, fileId);
+            return Task.FromResult(GroupFileUrl);
+        }
     }
 
     private sealed class RecordingRuntime : IOneBotServerRuntime

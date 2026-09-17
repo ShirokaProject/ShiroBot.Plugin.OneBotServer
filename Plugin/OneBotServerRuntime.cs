@@ -6,6 +6,7 @@ using ShiroBot.Plugin.OneBotServer.Infrastructure;
 using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.Plugin.OneBotServer.Transports;
 using ShiroBot.Model.QQ;
+using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Plugin.OneBotServer.Plugin;
@@ -88,6 +89,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
     {
         var state = _state ?? throw new InvalidOperationException("The OneBot runtime is not started.");
         var mapped = await OneBotEventMapper.MapAsync(source, format, state.Messages, cancellationToken).ConfigureAwait(false);
+        mapped = await EnrichGroupFileUrlsAsync(source, mapped, cancellationToken).ConfigureAwait(false);
         var evt = await PrepareEventAsync(source, mapped, state, cancellationToken).ConfigureAwait(false);
         state.Events.Push(evt);
         var operations = new List<Task>(_httpPosters.Length + 2);
@@ -144,6 +146,91 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         catch (NotSupportedException) { }
         return config.SelfId;
     }
+
+    internal async Task<OneBotEvent> EnrichGroupFileUrlsAsync(
+        BotEvent source,
+        OneBotEvent mapped,
+        CancellationToken cancellationToken)
+    {
+        var files = source switch
+        {
+            MessageEvent { Raw: QIncomingMessage message, Channel.Type: ChannelType.Group } =>
+                message.Segments.OfType<QIncomingFile>()
+                    .Select(file => (GroupId: message.PeerId, File: file))
+                    .ToArray(),
+            _ => []
+        };
+
+        if (files.Length == 0) return mapped;
+
+        var data = new Dictionary<string, object?>(mapped.Data);
+        var urls = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (groupId, file) in files)
+        {
+            var url = await TryResolveGroupFileUrlAsync(groupId, file.FileId, cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(url)) urls[file.FileId] = url;
+        }
+        if (urls.Count == 0) return mapped;
+
+        if (data.TryGetValue("message", out var messageValue))
+            data["message"] = AddFileUrls(messageValue, urls);
+        if (data.TryGetValue("raw_message", out var rawValue) && rawValue is string rawMessage)
+            data["raw_message"] = AddFileUrls(rawMessage, urls);
+        return mapped with { Data = data };
+    }
+
+    private async Task<string?> TryResolveGroupFileUrlAsync(long groupId, string fileId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var url = await context.GetGroupFileUrlAsync(groupId, fileId).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                BotLog.Warning($"[OneBot/File] 群文件下载地址为空，group_id={groupId}，file_id={SafeFileId(fileId)}。");
+                return null;
+            }
+            return url;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            BotLog.Error($"[OneBot/File] 获取群文件下载地址失败，group_id={groupId}，file_id={SafeFileId(fileId)}，{exception.GetType().Name}: {exception}");
+            return null;
+        }
+    }
+
+    private static object? AddFileUrls(object? message, IReadOnlyDictionary<string, string> urls)
+    {
+        var segments = message switch
+        {
+            OneBotSegment[] array => array,
+            IReadOnlyList<OneBotSegment> list => list.ToArray(),
+            string cq => CqCode.Parse(cq).ToArray(),
+            _ => null
+        };
+        if (segments is null) return message;
+
+        var changed = false;
+        for (var index = 0; index < segments.Length; index++)
+        {
+            var segment = segments[index];
+            if (!string.Equals(segment.Type, "file", StringComparison.OrdinalIgnoreCase)) continue;
+            var id = Convert.ToString(segment.Data.GetValueOrDefault("file_id")) ??
+                     Convert.ToString(segment.Data.GetValueOrDefault("id"));
+            if (string.IsNullOrWhiteSpace(id) || !urls.TryGetValue(id, out var url)) continue;
+            var segmentData = new Dictionary<string, object?>(segment.Data) { ["url"] = url };
+            segments[index] = segment with { Data = segmentData };
+            changed = true;
+        }
+        if (!changed) return message;
+        return message is string ? CqCode.Serialize(segments) : segments;
+    }
+
+    private static string SafeFileId(string fileId) => fileId.Length <= 160 ? fileId : fileId[..160] + "...";
 
     private async Task<OneBotEvent> PrepareEventAsync(BotEvent source, OneBotEvent evt, OneBotRuntimeState state, CancellationToken cancellationToken)
     {

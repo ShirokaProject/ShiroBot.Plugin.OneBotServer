@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using System.Diagnostics;
 using System.Text.Json;
 using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.SDK.Abstractions;
@@ -120,6 +121,10 @@ public sealed class OneBotReverseWebSocketClient
 
     private async Task HandleActionAsync(OneBotWebSocketConnection connection, JsonElement frame, CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
+        var action = frame.ValueKind == JsonValueKind.Object && frame.TryGetProperty("action", out var actionElement)
+            ? actionElement.GetString() ?? "unknown"
+            : "unknown";
         var echo = frame.ValueKind == JsonValueKind.Object && frame.TryGetProperty("echo", out var echoElement)
             ? echoElement.Clone()
             : (JsonElement?)null;
@@ -144,6 +149,10 @@ public sealed class OneBotReverseWebSocketClient
         }
 
         await connection.QueueAsync(JsonSerializer.SerializeToElement(response), cancellationToken).ConfigureAwait(false);
+        if (response.RetCode is 0 or 1)
+            BotLog.Log($"[OneBot/ReverseWS] {SafeEndpoint()} 调用 {SafeAction(action)} 完成，retcode={response.RetCode}，耗时 {stopwatch.ElapsedMilliseconds}ms。");
+        else
+            BotLog.Warning($"[OneBot/ReverseWS] {SafeEndpoint()} 调用 {SafeAction(action)} 失败，retcode={response.RetCode}，耗时 {stopwatch.ElapsedMilliseconds}ms，原因: {response.Message ?? "unknown"}。");
     }
 
     private object LifecycleEvent(string subType) => new
@@ -158,4 +167,5 @@ public sealed class OneBotReverseWebSocketClient
     private long NumericSelfId() => long.TryParse(options.SelfId, out var selfId) ? selfId : 0;
 
     private string SafeEndpoint() => $"{options.Endpoint.Scheme}://{options.Endpoint.Authority}{options.Endpoint.AbsolutePath}";
+    private static string SafeAction(string action) => action.Length <= 100 ? action : action[..100] + "...";
 }

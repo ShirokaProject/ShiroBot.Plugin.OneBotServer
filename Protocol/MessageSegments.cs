@@ -1,3 +1,4 @@
+using System.Globalization;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 
@@ -15,7 +16,7 @@ public static class MessageSegments
         QIncomingImage value => Segment("image", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("summary", value.Summary), ("sub_type", value.SubType)),
         QIncomingRecord value => Segment("record", ("file", value.ResourceId), ("url", value.TempUrl), ("duration", (long)value.Duration.TotalSeconds)),
         QIncomingVideo value => Segment("video", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("duration", (long)value.Duration.TotalSeconds)),
-        QIncomingFile value => Segment("file", ("id", value.FileId), ("file", value.FileId), ("name", value.FileName), ("size", value.FileSize), ("hash", value.FileHash)),
+        QIncomingFile value => Segment("file", ("file", value.FileName), ("file_id", value.FileId), ("file_size", value.FileSize.ToString(CultureInfo.InvariantCulture)), ("name", value.FileName)),
         QIncomingForward value => Segment("forward", ("id", value.ForwardId), ("title", value.Title), ("preview", value.Preview), ("summary", value.Summary)),
         QIncomingLightApp value => Segment("json", ("data", value.JsonPayload), ("app_name", value.AppName)),
         QIncomingXml value => Segment("xml", ("data", value.XmlPayload), ("service_id", value.ServiceId)),
@@ -36,11 +37,11 @@ public static class MessageSegments
         "image" => new ImageSegment(GetFile(segment)) { Summary = GetOptionalString(segment, "summary") },
         "record" => new AudioSegment(GetFile(segment)),
         "video" => new VideoSegment(GetFile(segment)) { ThumbnailUri = GetOptionalString(segment, "cover") },
-        "file" => new FileSegment(GetFirstString(segment, ["id", "file", "url"]))
+        "file" => new FileSegment(GetFirstString(segment, ["file", "url", "file_id", "id"]))
         {
-            ResourceId = GetFirstString(segment, ["id", "file"], required: false),
-            FileName = GetOptionalString(segment, "name"),
-            FileSize = GetOptionalLong(segment, "size")
+            ResourceId = GetFirstString(segment, ["file_id", "id"], required: false),
+            FileName = GetOptionalString(segment, "name") ?? GetOptionalString(segment, "file"),
+            FileSize = GetOptionalLong(segment, "file_size") ?? GetOptionalLong(segment, "size")
         },
         _ => new RawSegment("onebot", segment.Type, segment.Data),
     }).ToArray();

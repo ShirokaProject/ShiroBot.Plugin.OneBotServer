@@ -100,10 +100,10 @@ public sealed class OneBotEventMapperTests
         var segment = ((OneBotSegment[])mapped.Data["message"]!).Single();
 
         Assert.AreEqual("file", segment.Type);
-        Assert.AreEqual(fileId, segment.Data["id"]);
-        Assert.AreEqual(fileId, segment.Data["file"]);
+        Assert.AreEqual(fileId, segment.Data["file_id"]);
+        Assert.AreEqual("283622490.json", segment.Data["file"]);
         Assert.AreEqual("283622490.json", segment.Data["name"]);
-        Assert.AreEqual(929603L, segment.Data["size"]);
+        Assert.AreEqual("929603", segment.Data["file_size"]);
     }
 
     [TestMethod]
@@ -122,8 +122,9 @@ public sealed class OneBotEventMapperTests
         Assert.IsInstanceOfType(mapped.Data["message"], typeof(OneBotSegment[]));
         var segment = ((OneBotSegment[])mapped.Data["message"]!).Single();
 
-        Assert.AreEqual(fileId, segment.Data["id"]);
-        Assert.AreEqual(fileId, segment.Data["file"]);
+        Assert.AreEqual(fileId, segment.Data["file_id"]);
+        Assert.AreEqual("file.json", segment.Data["file"]);
+        Assert.AreEqual("42", segment.Data["file_size"]);
     }
 
     [TestMethod]
@@ -192,6 +193,22 @@ public sealed class OneBotEventMapperTests
         Assert.AreEqual(0L, wholeMute.Data["duration"]);
         Assert.AreEqual(40L, nudge.Data["target_id"]);
         Assert.AreEqual("kick_me", kicked.SubType);
+    }
+
+    [TestMethod]
+    public void Map_GroupUploadNoticeMatchesLLOneBotShape()
+    {
+        var mapped = OneBotEventMapper.Map(Platform(new QGroupFileUpload
+        {
+            SelfId = 10001, GroupId = 915449089, UserId = 1034028486, FileId = "/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", FileName = "283622490.json", FileSize = 929603
+        }), Format);
+
+        Assert.AreEqual("group_upload", mapped.NoticeType);
+        var file = (Dictionary<string, object?>)mapped.Data["file"]!;
+        Assert.AreEqual("/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", file["id"]);
+        Assert.AreEqual("283622490.json", file["name"]);
+        Assert.AreEqual(929603L, file["size"]);
+        Assert.AreEqual(0, file["busid"]);
     }
 
     [TestMethod]

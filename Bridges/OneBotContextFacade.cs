@@ -3,6 +3,7 @@ using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.Plugin.OneBotServer.Infrastructure;
 using ShiroBot.SDK.Models;
 using ShiroBot.SDK.Plugin;
+using System.Globalization;
 
 namespace ShiroBot.Plugin.OneBotServer.Bridges;
 
@@ -338,10 +339,10 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
         VideoSegment video => new("video", new Dictionary<string, object?> { ["file"] = video.Uri }),
         FileSegment file => new("file", new Dictionary<string, object?>
         {
-            ["id"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
-            ["file"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
-            ["name"] = file.FileName,
-            ["size"] = file.FileSize
+            ["file"] = file.FileName ?? file.Uri,
+            ["file_id"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
+            ["file_size"] = file.FileSize?.ToString(CultureInfo.InvariantCulture),
+            ["name"] = file.FileName
         }),
         RawSegment raw => new(raw.Kind, new Dictionary<string, object?> { ["payload"] = raw.Payload }),
         _ => OneBotSegment.Text(segment.ToString() ?? string.Empty),
