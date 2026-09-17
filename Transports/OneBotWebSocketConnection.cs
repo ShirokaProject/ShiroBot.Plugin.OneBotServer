@@ -15,7 +15,7 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
     public OneBotWebSocketConnection(WebSocket socket, OneBotWebSocketRole role, int queueCapacity, int maxMessageBytes)
     {
         if (queueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(queueCapacity));
-        if (maxMessageBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxMessageBytes));
+        if (maxMessageBytes < 0) throw new ArgumentOutOfRangeException(nameof(maxMessageBytes));
         this.socket = socket;
         this.maxMessageBytes = maxMessageBytes;
         Role = role;
@@ -29,6 +29,8 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
 
     public OneBotWebSocketRole Role { get; }
     public bool IsOpen => socket.State == WebSocketState.Open;
+    public WebSocketCloseStatus? LastCloseStatus { get; private set; }
+    public string? LastCloseDescription { get; private set; }
 
     public ValueTask QueueAsync(JsonElement payload, CancellationToken cancellationToken) =>
         outbound.Writer.WriteAsync(payload.Clone(), cancellationToken);
@@ -57,11 +59,18 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
         do
         {
             result = await socket.ReceiveAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close) return null;
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                LastCloseStatus = result.CloseStatus;
+                LastCloseDescription = result.CloseStatusDescription;
+                return null;
+            }
             if (result.MessageType != WebSocketMessageType.Text) throw new OneBotActionException(400, 1400, "WebSocket frames must be text");
-            if (stream.Length + result.Count > maxMessageBytes)
+            if (maxMessageBytes > 0 && stream.Length + result.Count > maxMessageBytes)
             {
                 await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, "WebSocket message is too large", cancellationToken).ConfigureAwait(false);
+                LastCloseStatus = WebSocketCloseStatus.MessageTooBig;
+                LastCloseDescription = "WebSocket message is too large";
                 return null;
             }
             await stream.WriteAsync(buffer.AsMemory(0, result.Count), cancellationToken).ConfigureAwait(false);

@@ -6,6 +6,7 @@ using ShiroBot.Plugin.OneBotServer.Infrastructure;
 using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.Plugin.OneBotServer.Transports;
 using ShiroBot.Model.QQ;
+using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Plugin.OneBotServer.Actions;
@@ -61,8 +62,13 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         StandardActions.Concat([".handle_quick_operation"]).Concat(ExtensionActions).Concat(FileActions)
             .Concat(["get_guild_list"]).Concat(UnsupportedExtendedActions), StringComparer.Ordinal);
     private readonly object _rateLimitLock = new();
+    private readonly object _credentialLock = new();
+    private readonly Dictionary<string, CachedCredential<string>> _cookieCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeSpan _rateLimit;
+    private readonly TimeSpan _credentialCacheDuration = TimeSpan.FromMinutes(5);
     private Task _rateLimitedTail = Task.CompletedTask;
+    private Task<string>? _csrfFetch;
+    private CachedCredential<long>? _csrfCache;
     private DateTimeOffset _lastRateLimitedAt = DateTimeOffset.MinValue;
 
     public OneBotActionDispatcher(IOneBotContextFacade context, TimeSpan? rateLimit = null) : this(context, null, rateLimit) { }
@@ -109,6 +115,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         }
         catch (Exception exception)
         {
+            BotLog.Error($"[OneBot] Action {normalized.Action} 执行异常 ({exception.GetType().Name}): {exception}");
             return OneBotResponse<object?>.Failed(1500, exception.Message, request.Echo);
         }
     }
@@ -130,7 +137,10 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
     private static async Task RunBackground(Func<Task<object?>> operation)
     {
         try { await operation(); }
-        catch { /* OneBot async actions cannot report a later failure to the original request. */ }
+        catch (Exception exception)
+        {
+            BotLog.Error($"[OneBot] 异步 Action 执行异常 ({exception.GetType().Name}): {exception}");
+        }
     }
 
     private Task EnqueueRateLimited(Func<Task<object?>> operation)
@@ -142,7 +152,10 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 var wait = _rateLimit - (DateTimeOffset.UtcNow - _lastRateLimitedAt);
                 if (wait > TimeSpan.Zero) await Task.Delay(wait);
                 try { await operation(); }
-                catch { /* Keep the queue alive after an individual async action fails. */ }
+                catch (Exception exception)
+                {
+                    BotLog.Error($"[OneBot] 限速 Action 执行异常 ({exception.GetType().Name}): {exception}");
+                }
                 finally { _lastRateLimitedAt = DateTimeOffset.UtcNow; }
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default).Unwrap();
             return _rateLimitedTail;
@@ -178,11 +191,11 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 var groupChannel = Channel.Group(Id(p, "group_id").ToString());
                 return await RewriteMessageCollectionAsync(await context.GetHistoryAsync(groupChannel, ResolveOptionalSequence(p), NonNegativeInt(p, "count", 20)), groupChannel);
             case "mark_msg_as_read": var read = MessageReference(p); return await Void(context.MarkAsReadAsync(read.Sequence.ToString(), ToChannel(read)));
-            case "get_cookies": return new { cookies = await context.GetCookiesAsync(OneBotParameters.String(p, "domain", "")) };
-            case "get_csrf_token": return new { token = Csrf(await context.GetCsrfTokenAsync()) };
+            case "get_cookies": return new { cookies = await GetCookiesAsync(OneBotParameters.String(p, "domain", "")) };
+            case "get_csrf_token": return new { token = await GetCsrfTokenAsync() };
             case "get_credentials":
-                var cookies = await context.GetCookiesAsync(OneBotParameters.String(p, "domain", ""));
-                return new { cookies, csrf_token = Csrf(await context.GetCsrfTokenAsync()) };
+                var cookies = await GetCookiesAsync(OneBotParameters.String(p, "domain", ""));
+                return new { cookies, csrf_token = await GetCsrfTokenAsync() };
             case "get_version_info": return await context.GetVersionInfoAsync();
             case "get_image": return new { file = await context.GetResourceUrlAsync(OneBotParameters.String(p, "file")) };
             case "get_record":
@@ -585,6 +598,74 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         var messageId = await state.Messages.RegisterAsync(new MessageReference(Scene(channel), peerId, sequence));
         return new { message_id = messageId };
     }
+
+    private async Task<string> GetCookiesAsync(string domain)
+    {
+        Task<string> fetch;
+        lock (_credentialLock)
+        {
+            if (_cookieCache.TryGetValue(domain, out var cached) && cached.ExpiresAt > DateTimeOffset.UtcNow)
+                return cached.Value;
+
+            if (cached?.Pending is not null) fetch = cached.Pending;
+            else
+            {
+                fetch = FetchCookiesAsync(domain);
+                _cookieCache[domain] = new CachedCredential<string>(string.Empty, DateTimeOffset.MinValue, fetch);
+            }
+        }
+
+        var cookies = await fetch.ConfigureAwait(false);
+        lock (_credentialLock)
+            _cookieCache[domain] = new CachedCredential<string>(cookies, DateTimeOffset.UtcNow.Add(_credentialCacheDuration));
+        return cookies;
+    }
+
+    private async Task<string> FetchCookiesAsync(string domain)
+    {
+        try
+        {
+            return await context.GetCookiesAsync(domain).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            // OneBot clients probe domains that some QQ implementations do not permit.
+            BotLog.Warning($"[OneBot] get_cookies 获取失败，domain='{SafeDomain(domain)}'，{exception.GetType().Name}: {exception.Message}；5 分钟内返回空 Cookie。");
+            return string.Empty;
+        }
+    }
+
+    private async Task<long> GetCsrfTokenAsync()
+    {
+        Task<string> fetch;
+        lock (_credentialLock)
+        {
+            if (_csrfCache is { } cached && cached.ExpiresAt > DateTimeOffset.UtcNow) return cached.Value;
+            fetch = _csrfFetch ??= context.GetCsrfTokenAsync();
+        }
+
+        long token;
+        try
+        {
+            token = Csrf(await fetch.WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false));
+        }
+        catch (Exception exception)
+        {
+            BotLog.Warning($"[OneBot] get_csrf_token 获取失败，{exception.GetType().Name}: {exception.Message}；5 分钟内返回 0。");
+            token = 0;
+        }
+
+        lock (_credentialLock)
+        {
+            _csrfFetch = null;
+            _csrfCache = new CachedCredential<long>(token, DateTimeOffset.UtcNow.Add(_credentialCacheDuration));
+        }
+        return token;
+    }
+
+    private sealed record CachedCredential<T>(T Value, DateTimeOffset ExpiresAt, Task<T>? Pending = null);
+
+    private static string SafeDomain(string domain) => domain.Length <= 120 ? domain : domain[..120] + "...";
 
     private static (string Action, bool Async, bool RateLimited) Normalize(string action)
     {

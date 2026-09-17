@@ -85,6 +85,24 @@ public sealed class OneBotRuntimeAndServiceTests
         Assert.AreEqual(3, runtime.StopCount);
     }
 
+    [TestMethod]
+    public async Task Service_FailedReconfigureRestoresPreviousConfiguration()
+    {
+        var runtime = new RecordingRuntime { FailPort = 5702 };
+        var original = DisabledConfig() with { Port = 5701 };
+        var service = new OneBotServerService(runtime, original);
+        await service.StartAsync();
+
+        var exception = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => service.ReconfigureAsync(original with { Port = 5702 }));
+
+        StringAssert.Contains(exception.Message, "previous configuration was restored");
+        CollectionAssert.AreEqual(new[] { 5701, 5702, 5701 }, runtime.StartedPorts);
+        Assert.AreEqual(1, runtime.StopCount);
+        await service.DisposeAsync();
+        Assert.AreEqual(2, runtime.StopCount);
+    }
+
     private static OneBotServerConfig DisabledConfig() => new()
     {
         Enabled = true,
@@ -104,12 +122,16 @@ public sealed class OneBotRuntimeAndServiceTests
     {
         public int StartCount { get; private set; }
         public int StopCount { get; private set; }
+        public int? FailPort { get; init; }
+        public List<int> StartedPorts { get; } = [];
         public TaskCompletionSource SecondStartEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseSecondStart { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public async Task StartAsync(OneBotServerConfig config, CancellationToken cancellationToken)
         {
             StartCount++;
+            StartedPorts.Add(config.Port);
+            if (config.Port == FailPort) throw new InvalidOperationException("Port is unavailable.");
             if (StartCount == 2)
             {
                 SecondStartEntered.SetResult();

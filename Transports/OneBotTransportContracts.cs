@@ -75,9 +75,9 @@ public sealed record OneBotServerOptions(
     string HttpPath = "/",
     bool WebSocketEnabled = true,
     string WebSocketPath = "/",
-    int MaxRequestBodyBytes = 1_048_576,
+    int MaxRequestBodyBytes = 0,
     int MaxWebSocketConnections = 32,
-    int MaxWebSocketMessageBytes = 1_048_576);
+    int MaxWebSocketMessageBytes = 0);
 
 public sealed record OneBotReverseWebSocketOptions(
     Uri Endpoint,
@@ -87,7 +87,7 @@ public sealed record OneBotReverseWebSocketOptions(
     TimeSpan? ReconnectDelay = null,
     int SocketQueueCapacity = 128,
     IReadOnlyDictionary<string, string>? Headers = null,
-    int MaxWebSocketMessageBytes = 1_048_576);
+    int MaxWebSocketMessageBytes = 0);
 
 public sealed record OneBotHttpEventPostOptions(
     IReadOnlyList<Uri> Endpoints,

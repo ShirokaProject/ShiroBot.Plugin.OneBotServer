@@ -54,7 +54,7 @@ public static class OneBotTransportProtocol
         return new OneBotActionRequest(actionElement.GetString()!, parameters, echo);
     }
 
-    public static async Task<OneBotActionRequest> ParseHttpActionAsync(HttpRequest request, string action, CancellationToken cancellationToken, int maxBodyBytes = int.MaxValue)
+    public static async Task<OneBotActionRequest> ParseHttpActionAsync(HttpRequest request, string action, CancellationToken cancellationToken, int maxBodyBytes = 0)
     {
         if (!IsActionName(action))
             throw new OneBotActionException(StatusCodes.Status404NotFound, 1404, "action was not found");
@@ -65,14 +65,14 @@ public static class OneBotTransportProtocol
             if (!string.Equals(key, "access_token", StringComparison.Ordinal)) values[key] = ToJson(value.ToArray());
         }
 
-        if (maxBodyBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxBodyBytes));
-        if (request.ContentLength > maxBodyBytes)
+        if (maxBodyBytes < 0) throw new ArgumentOutOfRangeException(nameof(maxBodyBytes));
+        if (maxBodyBytes > 0 && request.ContentLength > maxBodyBytes)
             throw new OneBotActionException(StatusCodes.Status413PayloadTooLarge, 1413, "request body is too large");
 
         JsonElement? echo = null;
         if (HttpMethods.IsPost(request.Method) && request.ContentLength is not 0)
         {
-            request.Body = new LimitedReadStream(request.Body, maxBodyBytes);
+            if (maxBodyBytes > 0) request.Body = new LimitedReadStream(request.Body, maxBodyBytes);
             if (request.HasFormContentType)
             {
                 var form = await request.ReadFormAsync(cancellationToken).ConfigureAwait(false);

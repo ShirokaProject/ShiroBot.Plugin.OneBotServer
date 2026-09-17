@@ -1,5 +1,6 @@
 using ShiroBot.Plugin.OneBotServer.Bridges;
 using ShiroBot.Plugin.OneBotServer.Configuration;
+using System.Text.Json;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Core;
 using ShiroBot.SDK.Models;
@@ -10,7 +11,7 @@ namespace ShiroBot.Plugin.OneBotServer.Plugin;
 [BotPlugin(
     "OneBotServer",
     Name = "OneBot Server",
-    Version = "0.1.0",
+    Version = "0.1.1",
     Author = "ShirokaProject",
     Category = PluginCategory.Utility,
     Description = "Exposes ShiroBot QQ events and actions through the OneBot v11 protocol.",
@@ -24,6 +25,7 @@ public sealed class OneBotServerPlugin : PluginBase
     private IDisposable? _configWatcher;
     private readonly CancellationTokenSource _unloading = new();
     private readonly SemaphoreSlim _configurationGate = new(1, 1);
+    private string _configurationFingerprint = string.Empty;
 
     protected override void ConfigureRoutes() => Events.Map<BotEvent>(PublishEventAsync);
 
@@ -31,6 +33,7 @@ public sealed class OneBotServerPlugin : PluginBase
     {
         _config = Context.Config.Load<OneBotServerConfig>();
         Context.Config.Save(_config);
+        _configurationFingerprint = Fingerprint(_config);
         _service = new OneBotServerService(new OneBotServerRuntime(new OneBotContextFacade(Context), Context.PluginDirectory), _config);
         _configWatcher = Context.Config.Watch<OneBotServerConfig>(ApplyConfiguration);
         await _service.StartAsync().ConfigureAwait(false);
@@ -54,7 +57,6 @@ public sealed class OneBotServerPlugin : PluginBase
 
     private void ApplyConfiguration(OneBotServerConfig config)
     {
-        _config = config;
         if (_service is not null && !_unloading.IsCancellationRequested) _ = ReconfigureAsync(config);
     }
 
@@ -65,7 +67,14 @@ public sealed class OneBotServerPlugin : PluginBase
             await _configurationGate.WaitAsync(_unloading.Token).ConfigureAwait(false);
             try
             {
-                if (!_unloading.IsCancellationRequested) await _service!.ReconfigureAsync(config).ConfigureAwait(false);
+                if (_unloading.IsCancellationRequested) return;
+                var fingerprint = Fingerprint(config);
+                if (string.Equals(fingerprint, _configurationFingerprint, StringComparison.Ordinal)) return;
+
+                await _service!.ReconfigureAsync(config).ConfigureAwait(false);
+                _config = config;
+                _configurationFingerprint = fingerprint;
+                BotLog.Info($"OneBot Server configuration reloaded; listening on {config.Host}:{config.Port}.");
             }
             finally { _configurationGate.Release(); }
         }
@@ -75,4 +84,6 @@ public sealed class OneBotServerPlugin : PluginBase
             BotLog.Error($"Failed to apply OneBot Server configuration: {exception}");
         }
     }
+
+    private static string Fingerprint(OneBotServerConfig config) => JsonSerializer.Serialize(config);
 }

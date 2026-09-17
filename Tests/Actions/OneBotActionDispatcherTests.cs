@@ -232,6 +232,25 @@ public sealed class OneBotActionDispatcherTests
     }
 
     [TestMethod]
+    public async Task Credentials_FailureReturnsFallbackAndCachesIt()
+    {
+        var facade = new RecordingFacade { CredentialFailure = new InvalidOperationException("domain no permission") };
+        var dispatcher = new OneBotActionDispatcher(facade);
+
+        var first = await dispatcher.DispatchAsync(Request("get_credentials", """{"domain":"example.test"}"""));
+        var second = await dispatcher.DispatchAsync(Request("get_cookies", """{"domain":"example.test"}"""));
+        var csrf = await dispatcher.DispatchAsync(Request("get_csrf_token", "{}"));
+
+        Assert.AreEqual(0, first.RetCode);
+        Assert.AreEqual(0, second.RetCode);
+        Assert.AreEqual(0, csrf.RetCode);
+        Assert.AreEqual(1, facade.CookieCalls);
+        Assert.AreEqual(1, facade.CsrfCalls);
+        StringAssert.Contains(JsonSerializer.Serialize(first.Data), "\"cookies\":\"\"");
+        StringAssert.Contains(JsonSerializer.Serialize(first.Data), "\"csrf_token\":0");
+    }
+
+    [TestMethod]
     public async Task FileActions_AcceptLLOneBotAliasesAndForwardOperations()
     {
         var facade = new RecordingFacade();
@@ -386,6 +405,9 @@ public sealed class OneBotActionDispatcherTests
         public List<IReadOnlyList<MessageSegment>> Messages { get; } = [];
         public TaskCompletionSource<object?>? LoginGate { get; init; }
         public Exception? Failure { get; init; }
+        public Exception? CredentialFailure { get; init; }
+        public int CookieCalls { get; private set; }
+        public int CsrfCalls { get; private set; }
         public int LoginCalls { get; private set; }
         public ConcurrentQueue<DateTimeOffset> LoginCallTimes { get; } = [];
         public (long, long, bool) GroupAdmin { get; private set; }
@@ -436,8 +458,16 @@ public sealed class OneBotActionDispatcherTests
         public override Task SetGroupKickAsync(long groupId, long userId, bool rejectAddRequest) { KickedUsers.Add(userId); return Task.CompletedTask; }
         public override Task SetFriendRequestAsync(RequestFlag request, bool approve, string? remark) { FriendRequest = (request.InitiatorUid!, approve, remark); return Task.CompletedTask; }
         public override Task SetGroupRequestAsync(RequestFlag request, bool approve, string? reason) { GroupRequest = request; return Task.CompletedTask; }
-        public override Task<string> GetCookiesAsync(string domain) => Task.FromResult("cookie=" + domain);
-        public override Task<string> GetCsrfTokenAsync() => Task.FromResult("42");
+        public override Task<string> GetCookiesAsync(string domain)
+        {
+            CookieCalls++;
+            return CredentialFailure is null ? Task.FromResult("cookie=" + domain) : Task.FromException<string>(CredentialFailure);
+        }
+        public override Task<string> GetCsrfTokenAsync()
+        {
+            CsrfCalls++;
+            return CredentialFailure is null ? Task.FromResult("42") : Task.FromException<string>(CredentialFailure);
+        }
         public override Task SendNudgeAsync(long? groupId, long userId) { Nudge = (groupId, userId); return Task.CompletedTask; }
         public override Task SetReactionAsync(long groupId, long messageId, string reactionId, bool enabled) { Reaction = (groupId, messageId, reactionId, enabled); return Task.CompletedTask; }
         public override Task SendAnnouncementAsync(long groupId, string content, string? image) { Announcement = (groupId, content); return Task.CompletedTask; }

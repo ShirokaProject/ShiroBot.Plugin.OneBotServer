@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using ShiroBot.SDK.Abstractions;
 
 namespace ShiroBot.Plugin.OneBotServer.Transports;
 
@@ -41,7 +42,12 @@ public sealed class OneBotHttpEventPoster
             if (!string.IsNullOrEmpty(options.SelfId)) request.Headers.TryAddWithoutValidation("X-Self-ID", options.SelfId);
 
             using var response = await client.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode || quickOperations is null) return;
+            if (!response.IsSuccessStatusCode)
+            {
+                BotLog.Warning($"[OneBot/HTTP-POST] 事件投递失败: {SafeEndpoint(endpoint)} 返回 HTTP {(int)response.StatusCode}。");
+                return;
+            }
+            if (quickOperations is null) return;
             var responseBody = await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
             if (responseBody.Length == 0) return;
 
@@ -49,9 +55,12 @@ public sealed class OneBotHttpEventPoster
             if (document.RootElement.ValueKind == JsonValueKind.Object)
                 await quickOperations.HandleAsync(@event, document.RootElement.Clone(), cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception) when (!cancellationToken.IsCancellationRequested)
+        catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         {
             // A failed target, callback, or successful non-JSON response must not block other event targets.
+            BotLog.Error($"[OneBot/HTTP-POST] 事件投递或快速操作失败: {SafeEndpoint(endpoint)}，{exception.GetType().Name}: {exception}");
         }
     }
+
+    private static string SafeEndpoint(Uri endpoint) => $"{endpoint.Scheme}://{endpoint.Authority}{endpoint.AbsolutePath}";
 }

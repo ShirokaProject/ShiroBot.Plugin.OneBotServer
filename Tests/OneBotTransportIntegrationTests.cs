@@ -95,6 +95,23 @@ public sealed class OneBotTransportIntegrationTests
     }
 
     [TestMethod]
+    public async Task HttpApi_ZeroLimitRelaysLargeBodyWithoutRejectingIt()
+    {
+        var handler = new RecordingActionHandler();
+        await using var server = await OneBotKestrelServer.StartAsync(
+            new OneBotServerOptions(["http://127.0.0.1:0"], "10001", MaxRequestBodyBytes: 0), handler);
+        using var client = CreateClient(server);
+        var blob = new string('x', 64 * 1024);
+        using var response = await client.PostAsync(
+            "get_status",
+            new StringContent(JsonSerializer.Serialize(new { blob }), Encoding.UTF8, "application/json"));
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        Assert.AreEqual("get_status", handler.LastRequest?.Action);
+        Assert.AreEqual(blob.Length, handler.LastRequest!.Params["blob"].GetString()!.Length);
+    }
+
+    [TestMethod]
     public async Task HttpEventPoster_SignsRequestAndDispatchesQuickOperation()
     {
         var http = new RecordingHttpHandler
@@ -192,6 +209,27 @@ public sealed class OneBotTransportIntegrationTests
         Assert.AreEqual(WebSocketMessageType.Close, result.MessageType);
         Assert.AreEqual(WebSocketCloseStatus.MessageTooBig, result.CloseStatus);
         Assert.IsNull(handler.LastRequest);
+    }
+
+    [TestMethod]
+    public async Task ForwardWebSocket_ZeroLimitRelaysLargeMessageWithoutClosingIt()
+    {
+        var handler = new RecordingActionHandler();
+        await using var server = await OneBotKestrelServer.StartAsync(
+            new OneBotServerOptions(["http://127.0.0.1:0"], "10001", MaxWebSocketMessageBytes: 0), handler);
+        using var socket = new ClientWebSocket();
+        var endpoint = new Uri(server.Addresses.Single().Replace("http://", "ws://", StringComparison.Ordinal) + "/api");
+        await socket.ConnectAsync(endpoint, CancellationToken.None);
+        var blob = new string('x', 64 * 1024);
+        var request = JsonSerializer.SerializeToUtf8Bytes(new { action = "get_status", @params = new { blob }, echo = 9 });
+
+        await socket.SendAsync(request, WebSocketMessageType.Text, true, CancellationToken.None);
+        using var response = await ReceiveJsonAsync(socket);
+
+        Assert.AreEqual(0, response.RootElement.GetProperty("retcode").GetInt32());
+        Assert.AreEqual(9, response.RootElement.GetProperty("echo").GetInt32());
+        Assert.AreEqual(blob.Length, handler.LastRequest!.Params["blob"].GetString()!.Length);
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
     }
 
     [DataTestMethod]

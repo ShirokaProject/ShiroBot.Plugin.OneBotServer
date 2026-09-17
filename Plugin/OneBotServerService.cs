@@ -42,15 +42,46 @@ public sealed class OneBotServerService : IAsyncDisposable
         await _lifecycle.WaitAsync(_shutdown.Token).ConfigureAwait(false);
         try
         {
-            _config = config;
+            var previous = _config;
+            var wasStarted = _started;
             if (_started)
             {
                 await _runtime.StopAsync(CancellationToken.None).ConfigureAwait(false);
                 _started = false;
             }
-            if (_shutdown.IsCancellationRequested || !_config.Enabled) return;
-            await _runtime.StartAsync(_config, _shutdown.Token).ConfigureAwait(false);
-            _started = true;
+
+            if (_shutdown.IsCancellationRequested) return;
+            try
+            {
+                if (config.Enabled)
+                {
+                    await _runtime.StartAsync(config, _shutdown.Token).ConfigureAwait(false);
+                    _started = true;
+                }
+                _config = config;
+            }
+            catch (Exception reloadError)
+            {
+                _config = previous;
+                if (wasStarted && previous.Enabled)
+                {
+                    try
+                    {
+                        await _runtime.StartAsync(previous, _shutdown.Token).ConfigureAwait(false);
+                        _started = true;
+                    }
+                    catch (Exception rollbackError)
+                    {
+                        throw new InvalidOperationException(
+                            $"OneBot Server configuration reload failed and the previous configuration could not be restored. Reload: {reloadError.Message}; rollback: {rollbackError.Message}",
+                            new AggregateException(reloadError, rollbackError));
+                    }
+                }
+
+                throw new InvalidOperationException(
+                    "OneBot Server configuration reload failed; the previous configuration was restored.",
+                    reloadError);
+            }
         }
         finally { _lifecycle.Release(); }
     }

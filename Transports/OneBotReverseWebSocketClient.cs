@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text.Json;
 using ShiroBot.Plugin.OneBotServer.Protocol;
+using ShiroBot.SDK.Abstractions;
 
 namespace ShiroBot.Plugin.OneBotServer.Transports;
 
@@ -18,7 +19,7 @@ public sealed class OneBotReverseWebSocketClient
         this.actions = actions ?? throw new ArgumentNullException(nameof(actions));
         if (string.IsNullOrWhiteSpace(options.SelfId)) throw new ArgumentException("Self ID is required", nameof(options));
         if (options.SocketQueueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(options));
-        if (options.MaxWebSocketMessageBytes < 1) throw new ArgumentOutOfRangeException(nameof(options));
+        if (options.MaxWebSocketMessageBytes < 0) throw new ArgumentOutOfRangeException(nameof(options));
         reconnectDelay = options.ReconnectDelay ?? TimeSpan.FromSeconds(5);
         if (reconnectDelay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(options));
         if (options.Endpoint.Scheme is not ("ws" or "wss")) throw new ArgumentException("Endpoint must use ws or wss", nameof(options));
@@ -41,11 +42,13 @@ public sealed class OneBotReverseWebSocketClient
             {
                 return;
             }
-            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
             {
-                // Closed, refused, or malformed reverse endpoints are retried at the configured fixed interval.
+                BotLog.Error($"[OneBot/ReverseWS] {SafeEndpoint()} 连接异常 ({exception.GetType().Name}): {exception}");
             }
 
+            if (!cancellationToken.IsCancellationRequested)
+                BotLog.Warning($"[OneBot/ReverseWS] {SafeEndpoint()} 已断开，{reconnectDelay.TotalSeconds:0.###} 秒后重连。");
             await Task.Delay(reconnectDelay, cancellationToken).ConfigureAwait(false);
         }
     }
@@ -74,6 +77,7 @@ public sealed class OneBotReverseWebSocketClient
         socket.Options.SetRequestHeader("X-Client-Role", OneBotTransportProtocol.RoleName(options.Role));
         if (!string.IsNullOrEmpty(options.AccessToken)) socket.Options.SetRequestHeader("Authorization", "Bearer " + options.AccessToken);
         await socket.ConnectAsync(options.Endpoint, cancellationToken).ConfigureAwait(false);
+        BotLog.Info($"[OneBot/ReverseWS] 已连接 {SafeEndpoint()}，role={OneBotTransportProtocol.RoleName(options.Role)}。");
 
         await using var connection = new OneBotWebSocketConnection(socket, options.Role, options.SocketQueueCapacity, options.MaxWebSocketMessageBytes);
         Volatile.Write(ref this.connection, connection);
@@ -96,7 +100,11 @@ public sealed class OneBotReverseWebSocketClient
                         OneBotResponse<object?>.Failed(1400, "invalid JSON")), cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-                if (frame is null) return;
+                if (frame is null)
+                {
+                    BotLog.Warning($"[OneBot/ReverseWS] 对端关闭 {SafeEndpoint()}，status={connection.LastCloseStatus?.ToString() ?? "unknown"}，reason={connection.LastCloseDescription ?? "none"}。");
+                    return;
+                }
                 if (!OneBotTransportProtocol.CanReceiveActions(options.Role)) continue;
                 await HandleActionAsync(connection, frame.Value, cancellationToken).ConfigureAwait(false);
             }
@@ -129,8 +137,9 @@ public sealed class OneBotReverseWebSocketClient
         {
             response = OneBotResponse<object?>.Failed(1400, exception.Message, echo);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            BotLog.Error($"[OneBot/ReverseWS] Action 处理异常 ({exception.GetType().Name}): {exception}");
             response = OneBotResponse<object?>.Failed(1500, "internal server error", echo);
         }
 
@@ -147,4 +156,6 @@ public sealed class OneBotReverseWebSocketClient
     };
 
     private long NumericSelfId() => long.TryParse(options.SelfId, out var selfId) ? selfId : 0;
+
+    private string SafeEndpoint() => $"{options.Endpoint.Scheme}://{options.Endpoint.Authority}{options.Endpoint.AbsolutePath}";
 }

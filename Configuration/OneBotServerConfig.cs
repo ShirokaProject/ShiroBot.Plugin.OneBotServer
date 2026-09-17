@@ -73,8 +73,10 @@ public sealed record OneBotStorageConfig
 
 public sealed record OneBotServerLimits
 {
-    public int MaxRequestBodyBytes { get; init; } = 1_048_576;
+    /// <summary>Maximum HTTP action body size. Zero disables the relay-side limit.</summary>
+    public int MaxRequestBodyBytes { get; init; }
     public int MaxWebSocketConnections { get; init; } = 32;
-    public int MaxWebSocketMessageBytes { get; init; } = 1_048_576;
+    /// <summary>Maximum WebSocket action size. Zero disables the relay-side limit.</summary>
+    public int MaxWebSocketMessageBytes { get; init; }
     public int EventQueueCapacity { get; init; } = 1_024;
 }
