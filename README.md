@@ -120,10 +120,7 @@ registry_max_entries = 100000
 retention_days = 7
 
 [limits]
-# 0 表示中转层不限制，由 QQ Adapter 或上游服务决定是否接受。
-max_request_body_bytes = 0
 max_web_socket_connections = 32
-max_web_socket_message_bytes = 0
 event_queue_capacity = 1024
 ```
 
@@ -368,7 +365,7 @@ OneBot message_id <-> scene + peer_id + message_seq
 
 - 默认只监听 `127.0.0.1`。
 - 监听公网或局域网地址时必须设置 `access_token`，并使用防火墙限制来源。
-- HTTP 请求体和 WebSocket 消息默认不限制；可以把对应配置改为正数，启用中转层大小保护。
+- HTTP 请求体和 WebSocket 消息由中转层原样传递，不设置大小限制；是否接受由 QQ Adapter 或上游服务决定。
 - WebSocket 每个连接使用有界发送队列，避免无限积压。
 - 下载文件仅写入插件自身的 `storage/files` 目录。
 - 本地媒体访问限制在插件允许的目录内。

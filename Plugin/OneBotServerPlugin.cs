@@ -11,7 +11,7 @@ namespace ShiroBot.Plugin.OneBotServer.Plugin;
 [BotPlugin(
     "OneBotServer",
     Name = "OneBot Server",
-    Version = "0.1.1",
+    Version = "0.1.2",
     Author = "ShirokaProject",
     Category = PluginCategory.Utility,
     Description = "Exposes ShiroBot QQ events and actions through the OneBot v11 protocol.",
@@ -31,6 +31,7 @@ public sealed class OneBotServerPlugin : PluginBase
 
     protected override async Task LoadAsync()
     {
+        RemoveObsoleteRelayLimits(Context.Config.ConfigPath);
         _config = Context.Config.Load<OneBotServerConfig>();
         Context.Config.Save(_config);
         _configurationFingerprint = Fingerprint(_config);
@@ -86,4 +87,23 @@ public sealed class OneBotServerPlugin : PluginBase
     }
 
     private static string Fingerprint(OneBotServerConfig config) => JsonSerializer.Serialize(config);
+
+    private static void RemoveObsoleteRelayLimits(string configPath)
+    {
+        if (!File.Exists(configPath)) return;
+
+        var lines = File.ReadAllLines(configPath);
+        var filtered = lines.Where(line =>
+        {
+            var value = line.TrimStart();
+            return !value.StartsWith("max_request_body_bytes", StringComparison.OrdinalIgnoreCase) &&
+                   !value.StartsWith("max_web_socket_message_bytes", StringComparison.OrdinalIgnoreCase);
+        }).ToArray();
+        if (filtered.Length == lines.Length) return;
+
+        var temporaryPath = configPath + ".migrate-" + Guid.NewGuid().ToString("N");
+        File.WriteAllLines(temporaryPath, filtered);
+        File.Move(temporaryPath, configPath, overwrite: true);
+        BotLog.Info("OneBot Server removed obsolete HTTP/WebSocket size limit settings; relay payloads are now passed through without a plugin-side size limit.");
+    }
 }

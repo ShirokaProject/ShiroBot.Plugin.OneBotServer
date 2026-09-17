@@ -54,8 +54,8 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                         [$"http://{config.Host}:{config.Port}"], selfId, config.AccessToken,
                         config.Limits.EventQueueCapacity, config.Http.Enabled, config.Http.Path,
                          config.ForwardWebSocket.Enabled, config.ForwardWebSocket.Path,
-                         config.Limits.MaxRequestBodyBytes, config.Limits.MaxWebSocketConnections,
-                         config.Limits.MaxWebSocketMessageBytes),
+                         MaxRequestBodyBytes: 0, config.Limits.MaxWebSocketConnections,
+                         MaxWebSocketMessageBytes: 0),
                      _actions, runtimeToken).ConfigureAwait(false);
             }
 
@@ -67,7 +67,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                     var client = new OneBotReverseWebSocketClient(
                         new OneBotReverseWebSocketOptions(endpoint, selfId, role, config.AccessToken,
                             TimeSpan.FromSeconds(config.ReverseWebSocket.ReconnectDelaySeconds),
-                            config.Limits.EventQueueCapacity, MaxWebSocketMessageBytes: config.Limits.MaxWebSocketMessageBytes),
+                            config.Limits.EventQueueCapacity, MaxWebSocketMessageBytes: 0),
                         _actions);
                     _reverseWebSockets.Add(client);
                     _reverseWebSocketTasks.Add(client.RunAsync(runtimeToken));
