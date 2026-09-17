@@ -55,7 +55,9 @@ public static class OneBotEventMapper
 
     private static OneBotEvent MapMessage(MessageEvent message, OneBotEventFormatConfig format)
     {
-        var segments = message.Segments.Select(MapSegment).ToArray();
+        var segments = message.Raw is QIncomingMessage { Segments.Count: > 0 } qqMessage
+            ? MessageSegments.FromQq(qqMessage.Segments).ToArray()
+            : message.Segments.Select(MapSegment).ToArray();
         var data = new Dictionary<string, object?>
         {
             ["message_id"] = message.MessageId,
@@ -128,10 +130,22 @@ public static class OneBotEventMapper
         ImageSegment image => new OneBotSegment("image", new Dictionary<string, object?> { ["file"] = image.Uri }),
         AudioSegment audio => new OneBotSegment("record", new Dictionary<string, object?> { ["file"] = audio.Uri }),
         VideoSegment video => new OneBotSegment("video", new Dictionary<string, object?> { ["file"] = video.Uri }),
-        FileSegment file => new OneBotSegment("file", new Dictionary<string, object?> { ["file"] = file.Uri, ["name"] = file.FileName }),
+        FileSegment file => FileSegment(file),
         RawSegment raw => new OneBotSegment(raw.Kind, new Dictionary<string, object?> { ["payload"] = raw.Payload }),
         _ => OneBotSegment.Text(segment.ToString() ?? string.Empty)
     };
+
+    private static OneBotSegment FileSegment(FileSegment file)
+    {
+        var id = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId;
+        return new OneBotSegment("file", new Dictionary<string, object?>
+        {
+            ["id"] = id,
+            ["file"] = id,
+            ["name"] = file.FileName,
+            ["size"] = file.FileSize
+        });
+    }
 
     private static OneBotEvent Notice(BotEvent evt, string noticeType, IDictionary<string, object?> data, string? subType = null) => Event(evt, "notice", data, noticeType: noticeType, subType: subType);
     private static OneBotEvent Request(BotEvent evt, string requestType, IDictionary<string, object?> data, string? subType = null) => Event(evt, "request", data, requestType: requestType, subType: subType);

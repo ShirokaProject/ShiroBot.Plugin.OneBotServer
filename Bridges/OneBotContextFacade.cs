@@ -336,7 +336,13 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
         ImageSegment image => new("image", new Dictionary<string, object?> { ["file"] = image.Uri }),
         AudioSegment audio => new("record", new Dictionary<string, object?> { ["file"] = audio.Uri }),
         VideoSegment video => new("video", new Dictionary<string, object?> { ["file"] = video.Uri }),
-        FileSegment file => new("file", new Dictionary<string, object?> { ["file"] = file.Uri, ["name"] = file.FileName }),
+        FileSegment file => new("file", new Dictionary<string, object?>
+        {
+            ["id"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
+            ["file"] = string.IsNullOrWhiteSpace(file.ResourceId) ? file.Uri : file.ResourceId,
+            ["name"] = file.FileName,
+            ["size"] = file.FileSize
+        }),
         RawSegment raw => new(raw.Kind, new Dictionary<string, object?> { ["payload"] = raw.Payload }),
         _ => OneBotSegment.Text(segment.ToString() ?? string.Empty),
     };

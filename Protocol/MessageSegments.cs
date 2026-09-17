@@ -15,7 +15,7 @@ public static class MessageSegments
         QIncomingImage value => Segment("image", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("summary", value.Summary), ("sub_type", value.SubType)),
         QIncomingRecord value => Segment("record", ("file", value.ResourceId), ("url", value.TempUrl), ("duration", (long)value.Duration.TotalSeconds)),
         QIncomingVideo value => Segment("video", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("duration", (long)value.Duration.TotalSeconds)),
-        QIncomingFile value => Segment("file", ("id", value.FileId), ("name", value.FileName), ("size", value.FileSize), ("hash", value.FileHash)),
+        QIncomingFile value => Segment("file", ("id", value.FileId), ("file", value.FileId), ("name", value.FileName), ("size", value.FileSize), ("hash", value.FileHash)),
         QIncomingForward value => Segment("forward", ("id", value.ForwardId), ("title", value.Title), ("preview", value.Preview), ("summary", value.Summary)),
         QIncomingLightApp value => Segment("json", ("data", value.JsonPayload), ("app_name", value.AppName)),
         QIncomingXml value => Segment("xml", ("data", value.XmlPayload), ("service_id", value.ServiceId)),
@@ -36,7 +36,12 @@ public static class MessageSegments
         "image" => new ImageSegment(GetFile(segment)) { Summary = GetOptionalString(segment, "summary") },
         "record" => new AudioSegment(GetFile(segment)),
         "video" => new VideoSegment(GetFile(segment)) { ThumbnailUri = GetOptionalString(segment, "cover") },
-        "file" => new FileSegment(GetString(segment, "id")) { FileName = GetOptionalString(segment, "name"), FileSize = GetOptionalLong(segment, "size") },
+        "file" => new FileSegment(GetFirstString(segment, ["id", "file", "url"]))
+        {
+            ResourceId = GetFirstString(segment, ["id", "file"], required: false),
+            FileName = GetOptionalString(segment, "name"),
+            FileSize = GetOptionalLong(segment, "size")
+        },
         _ => new RawSegment("onebot", segment.Type, segment.Data),
     }).ToArray();
 
@@ -56,6 +61,14 @@ public static class MessageSegments
 
     private static OneBotSegment Segment(string type, params (string Key, object? Value)[] values) => new(type, values.Where(value => value.Value is not null).ToDictionary(value => value.Key, value => value.Value));
     private static string GetFile(OneBotSegment segment) => GetOptionalString(segment, "file") ?? GetString(segment, "url");
+    private static string GetFirstString(OneBotSegment segment, IReadOnlyList<string> names, bool required = true)
+    {
+        foreach (var name in names)
+        {
+            if (GetOptionalString(segment, name) is { Length: > 0 } value) return value;
+        }
+        return required ? throw new ArgumentException($"OneBot {segment.Type} requires one of: {string.Join(", ", names)}") : string.Empty;
+    }
     private static string GetString(OneBotSegment segment, string name) => GetOptionalString(segment, name) ?? throw new ArgumentException($"OneBot {segment.Type}.{name} must be a non-empty string");
     private static string? GetOptionalString(OneBotSegment segment, string name) => segment.Data.TryGetValue(name, out var value) && value is not null ? Convert.ToString(value) : null;
     private static long GetLong(OneBotSegment segment, string name) => long.TryParse(GetString(segment, name), out var result) ? result : throw new ArgumentException($"OneBot {segment.Type}.{name} must be an integer");

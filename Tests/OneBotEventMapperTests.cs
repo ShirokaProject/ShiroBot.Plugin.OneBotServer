@@ -3,6 +3,7 @@ using ShiroBot.Model.QQ;
 using ShiroBot.Plugin.OneBotServer.Configuration;
 using ShiroBot.Plugin.OneBotServer.Events;
 using ShiroBot.Plugin.OneBotServer.Infrastructure;
+using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.SDK.Models;
 
 namespace ShiroBot.Plugin.OneBotServer.Tests;
@@ -68,6 +69,61 @@ public sealed class OneBotEventMapperTests
         }, Format);
 
         Assert.AreEqual(0L, mapped.SelfId);
+    }
+
+    [TestMethod]
+    public void Map_GroupFilePrefersRawQqFileIdAndEmitsFileAlias()
+    {
+        const string fileId = "/2052811f-933c-4e61-8597-781769c47a0a";
+        var raw = new QGroupMessage
+        {
+            PeerId = 915449089,
+            MessageSeq = 123,
+            SenderId = 1034028486,
+            Group = new QGroup { GroupId = 915449089, GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = 915449089, UserId = 1034028486, Nickname = "user" },
+            Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
+        };
+        var message = new MessageEvent
+        {
+            Platform = "qq",
+            SelfId = "3900952625",
+            Raw = raw,
+            MessageId = "123",
+            Channel = Channel.Group("915449089"),
+            Sender = new User("1034028486"),
+            Segments = [new FileSegment(string.Empty) { FileName = "283622490.json", FileSize = 929603 }]
+        };
+
+        var mapped = OneBotEventMapper.Map(message, Format);
+        Assert.IsInstanceOfType(mapped.Data["message"], typeof(OneBotSegment[]));
+        var segment = ((OneBotSegment[])mapped.Data["message"]!).Single();
+
+        Assert.AreEqual("file", segment.Type);
+        Assert.AreEqual(fileId, segment.Data["id"]);
+        Assert.AreEqual(fileId, segment.Data["file"]);
+        Assert.AreEqual("283622490.json", segment.Data["name"]);
+        Assert.AreEqual(929603L, segment.Data["size"]);
+    }
+
+    [TestMethod]
+    public void Map_GenericFileUsesResourceIdWhenUriIsEmpty()
+    {
+        const string fileId = "/file-id";
+        var mapped = OneBotEventMapper.Map(new MessageEvent
+        {
+            Platform = "test",
+            SelfId = "1",
+            MessageId = "2",
+            Channel = Channel.Group("3"),
+            Sender = new User("4"),
+            Segments = [new FileSegment(string.Empty) { ResourceId = fileId, FileName = "file.json", FileSize = 42 }]
+        }, Format);
+        Assert.IsInstanceOfType(mapped.Data["message"], typeof(OneBotSegment[]));
+        var segment = ((OneBotSegment[])mapped.Data["message"]!).Single();
+
+        Assert.AreEqual(fileId, segment.Data["id"]);
+        Assert.AreEqual(fileId, segment.Data["file"]);
     }
 
     [TestMethod]
