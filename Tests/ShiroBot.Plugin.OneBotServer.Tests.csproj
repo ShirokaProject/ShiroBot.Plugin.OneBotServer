@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="MSTest.TestAdapter" Version="3.8.3" />
+    <PackageReference Include="MSTest.TestFramework" Version="3.8.3" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ShiroBot.Plugin.OneBotServer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ProtocolTests.cs" />
+    <Compile Include="CqAndSegmentTests.cs" />
+    <Compile Include="InfrastructureTests.cs" />
+    <Compile Include="RegistryTests.cs" />
+    <Compile Include="MediaCacheTests.cs" />
+    <Compile Include="Actions/**/*.cs" />
+    <Compile Include="Plugin/**/*.cs" />
+    <Compile Include="OneBotTransportProtocolTests.cs" />
+    <Compile Include="OneBotTransportIntegrationTests.cs" />
+    <Compile Include="OneBotEventMapperTests.cs" />
+  </ItemGroup>
+</Project>

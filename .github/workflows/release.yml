@@ -1,0 +1,34 @@
+name: Release OneBot Server Plugin
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Test
+        run: dotnet test Tests/ShiroBot.Plugin.OneBotServer.Tests.csproj --configuration Release
+      - name: Publish
+        run: dotnet publish ShiroBot.Plugin.OneBotServer.csproj --configuration Release --output publish
+      - name: Package
+        shell: bash
+        run: |
+          mkdir package
+          cp publish/ShiroBot.Plugin.OneBotServer.dll package/
+          if [ -f publish/ShiroBot.Plugin.OneBotServer.pdb ]; then cp publish/ShiroBot.Plugin.OneBotServer.pdb package/; fi
+          (cd package && zip -9 ../ShiroBot.Plugin.OneBotServer.zip ./*)
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ShiroBot.Plugin.OneBotServer.zip
