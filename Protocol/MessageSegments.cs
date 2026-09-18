@@ -21,7 +21,7 @@ public static class MessageSegments
         QIncomingLightApp value => Segment("json", ("data", value.JsonPayload), ("app_name", value.AppName)),
         QIncomingXml value => Segment("xml", ("data", value.XmlPayload), ("service_id", value.ServiceId)),
         QIncomingMarkdown value => Segment("markdown", ("content", value.Content)),
-        QIncomingMarketFace value => Segment("market_face", ("emoji_id", value.EmojiId), ("url", value.Url), ("emoji_package_id", value.EmojiPackageId), ("key", value.Key), ("summary", value.Summary)),
+        QIncomingMarketFace value => Segment("mface", ("emoji_id", value.EmojiId), ("emoji_package_id", value.EmojiPackageId), ("key", value.Key), ("summary", value.Summary), ("url", value.Url)),
         _ => throw new NotSupportedException($"Unsupported QQ incoming segment: {segment.GetType().Name}"),
     }).ToArray();
 

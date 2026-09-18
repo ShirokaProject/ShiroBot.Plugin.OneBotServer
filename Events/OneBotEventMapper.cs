@@ -97,7 +97,7 @@ public static class OneBotEventMapper
         return platform.Raw switch
         {
             QFriendNudge nudge => Notice(platform, "notify", Add(Add(data, "user_id", nudge.UserId), "target_id", nudge.IsSelfReceive ? nudge.SelfId : nudge.UserId), "poke"),
-            QFriendFileUpload file => Notice(platform, "friend_upload", Add(data, "user_id", file.UserId)) with { Data = Add(Add(data, "user_id", file.UserId), "file", File(file.FileId, file.FileName, file.FileSize, file.FileHash)) },
+            QFriendFileUpload file => Notice(platform, "offline_file", Add(data, "user_id", file.UserId)) with { Data = Add(Add(data, "user_id", file.UserId), "file", new Dictionary<string, object?> { ["id"] = file.FileId, ["fid"] = file.FileId, ["name"] = file.FileName, ["size"] = file.FileSize }) },
             QGroupNudge nudge => Notice(platform, "notify", data, "poke") with { Data = Add(Add(data, "user_id", nudge.SenderId), "target_id", nudge.ReceiverId) },
             QGroupAdminChange change => Notice(platform, "group_admin", data, change.IsSet ? "set" : "unset") with { Data = Add(Add(data, "group_id", change.GroupId), "user_id", change.UserId) },
             QGroupEssenceMessageChange change => Notice(platform, "essence", Add(Add(Add(data, "group_id", change.GroupId), "message_id", change.MessageSeq), "operator_id", change.OperatorId), change.IsSet ? "add" : "delete"),
@@ -233,12 +233,4 @@ public static class OneBotEventMapper
         var result = new Dictionary<string, object?>(source) { [name] = value };
         return result;
     }
-
-    private static Dictionary<string, object?> File(string id, string name, long size, string? hash) => new()
-    {
-        ["id"] = id,
-        ["name"] = name,
-        ["size"] = size,
-        ["hash"] = hash
-    };
 }

@@ -213,6 +213,33 @@ public sealed class OneBotEventMapperTests
     }
 
     [TestMethod]
+    public void Map_MarketFaceUsesLLOneBotMfaceSegmentType()
+    {
+        var raw = new QGroupMessage
+        {
+            PeerId = 3,
+            MessageSeq = 1,
+            SenderId = 4,
+            Group = new QGroup { GroupId = 3, GroupName = "g" },
+            GroupMember = new QGroupMember { GroupId = 3, UserId = 4, Nickname = "u" },
+            Segments = [new QIncomingMarketFace("emoji-id", "https://example.test/e.gif") { EmojiPackageId = 7, Key = "k", Summary = "s" }]
+        };
+        var mapped = OneBotEventMapper.Map(new MessageEvent
+        {
+            Platform = "qq", SelfId = "1", Raw = raw, MessageId = "1",
+            Channel = Channel.Group("3"), Sender = new User("4"),
+            Segments = [],
+        }, Format);
+
+        Assert.IsInstanceOfType(mapped.Data["message"], typeof(OneBotSegment[]));
+        var segment = ((OneBotSegment[])mapped.Data["message"]!).Single();
+        Assert.AreEqual("mface", segment.Type);
+        Assert.AreEqual("emoji-id", segment.Data["emoji_id"]);
+        Assert.AreEqual(7, segment.Data["emoji_package_id"]);
+        Assert.AreEqual("k", segment.Data["key"]);
+    }
+
+    [TestMethod]
     public void Map_MessageDeletedDistinguishesPrivateAndGroupRecall()
     {
         var privateRecall = OneBotEventMapper.Map(new MessageDeletedEvent

@@ -175,7 +175,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 var getMessageId = Id(p, "message_id");
                 var get = MessageReference(p);
                 return RewriteMessageId(await context.GetAsync(get.Sequence.ToString(), ToChannel(get)), getMessageId);
-            case "get_forward_msg": return await context.GetForwardedAsync(FirstString(p, ["id", "forward_id"]));
+            case "get_forward_msg": return await context.GetForwardedAsync(FirstString(p, ["id", "forward_id", "message_id"]));
             case "send_like": return await Void(context.SendLikeAsync(Id(p, "user_id"), NonNegativeInt(p, "times", 1)));
             case "get_login_info": return await context.GetLoginInfoAsync();
             case "get_stranger_info": return await context.GetStrangerAsync(Id(p, "user_id"), Bool(p, "no_cache"));
@@ -232,7 +232,9 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 var groupRequest = DecodeFlag(p);
                 if (groupRequest.Kind is not ("group" or "invitation")) throw new OneBotParameterException("flag is not a group request");
                 return await Void(context.SetGroupRequestAsync(groupRequest, Bool(p, "approve", true), OptionalString(p, "reason")));
-            case "send_poke": case "friend_poke": return await Void(context.SendNudgeAsync(null, Id(p, "user_id")));
+            case "send_poke": case "friend_poke":
+                var pokeTarget = OptionalId(p, "target_id") ?? Id(p, "user_id");
+                return await Void(context.SendNudgeAsync(OptionalId(p, "group_id"), pokeTarget));
             case "group_poke": return await Void(context.SendNudgeAsync(Id(p, "group_id"), Id(p, "user_id")));
             case "delete_friend": return await Void(context.DeleteFriendAsync(Id(p, "user_id")));
             case "_send_group_notice": return await Void(context.SendAnnouncementAsync(Id(p, "group_id"), OneBotParameters.String(p, "content"), OptionalString(p, "image")));
@@ -770,7 +772,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
     private async Task<object?> GetEventsAsync(IReadOnlyDictionary<string, JsonElement> p, CancellationToken cancellationToken)
     {
         if (state is null) throw new NotSupportedException("The event queue is not initialized.");
-        var cursor = FirstString(p, ["consumer", "cursor"], "default");
+        var cursor = FirstString(p, ["key", "consumer", "cursor"], "default");
         var timeout = NonNegativeInt(p, "timeout", 0);
         return await state.Events.FetchAsync(cursor, TimeSpan.FromMilliseconds(timeout), cancellationToken).ConfigureAwait(false);
     }

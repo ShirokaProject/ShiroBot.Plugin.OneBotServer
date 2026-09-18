@@ -295,6 +295,25 @@ public sealed class OneBotActionDispatcherTests
     }
 
     [TestMethod]
+    public async Task Actions_AcceptLLOneBotParameterAliases()
+    {
+        var facade = new RecordingFacade();
+        var dispatcher = new OneBotActionDispatcher(facade);
+
+        var forward = await dispatcher.DispatchAsync(Request("get_forward_msg", """{"message_id":"abc"}"""));
+        var poke = await dispatcher.DispatchAsync(Request("send_poke", """{"group_id":5,"user_id":6}"""));
+        var groupPoke = facade.Nudge;
+        var friendPoke = await dispatcher.DispatchAsync(Request("friend_poke", """{"target_id":7}"""));
+
+        Assert.AreEqual(0, forward.RetCode);
+        Assert.AreEqual("abc", facade.ForwardedId);
+        Assert.AreEqual(0, poke.RetCode);
+        Assert.AreEqual((5L, 6L), groupPoke);
+        Assert.AreEqual(0, friendPoke.RetCode);
+        Assert.AreEqual((null, 7L), facade.Nudge);
+    }
+
+    [TestMethod]
     public async Task SentMessageId_IsPersistedAndResolvedForDeleteAndGet()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -505,6 +524,8 @@ public sealed class OneBotActionDispatcherTests
         public override Task PersistGroupFileAsync(long groupId, string fileId) { Persist = (groupId, fileId); return Task.CompletedTask; }
         public override Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend) { PrivateFile = (userId, fileId, fileHash, isSelfSend); return Task.FromResult("https://example.test/private"); }
         public override Task<string> GetGroupFileUrlAsync(long groupId, string fileId) { GroupFile = (groupId, fileId); return Task.FromResult("https://example.test/group"); }
+        public string? ForwardedId { get; private set; }
+        public override Task<object?> GetForwardedAsync(string forwardId) { ForwardedId = forwardId; return Task.FromResult<object?>(new { messages = Array.Empty<object>() }); }
         public override Task<bool> CanSendImageAsync() => Task.FromResult(true);
         public override Task<bool> CanSendRecordAsync() => Task.FromResult(true);
         public override Task<object?> GetStatusAsync() => Task.FromResult<object?>(new { online = true, good = true });

@@ -167,6 +167,17 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                 }
                 return mapped with { Data = noticeData };
             }
+            if (source is PlatformEvent { Raw: QFriendFileUpload privateUpload })
+            {
+                var noticeData = new Dictionary<string, object?>(mapped.Data);
+                if (noticeData.TryGetValue("file", out var value) && value is IDictionary<string, object?> noticeFile)
+                {
+                    noticeFile["fid"] = privateUpload.FileId;
+                    var noticeUrl = await TryResolvePrivateFileUrlAsync(privateUpload, cancellationToken).ConfigureAwait(false);
+                    if (!string.IsNullOrWhiteSpace(noticeUrl)) noticeFile["url"] = noticeUrl;
+                }
+                return mapped with { Data = noticeData };
+            }
             return mapped;
         }
 
@@ -218,6 +229,30 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         catch (Exception exception)
         {
             BotLog.Error($"[OneBot/File] 获取群文件下载地址失败，group_id={groupId}，file_id={SafeFileId(fileId)}，{exception.GetType().Name}: {exception}");
+            return null;
+        }
+    }
+
+    private async Task<string?> TryResolvePrivateFileUrlAsync(QFriendFileUpload upload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var url = await context.GetPrivateFileUrlAsync(upload.UserId, upload.FileId, upload.FileHash ?? string.Empty, upload.IsSelf).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                BotLog.Warning($"[OneBot/File] 私聊文件下载地址为空，user_id={upload.UserId}，file_id={SafeFileId(upload.FileId)}。");
+                return null;
+            }
+            return url;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            BotLog.Error($"[OneBot/File] 获取私聊文件下载地址失败，user_id={upload.UserId}，file_id={SafeFileId(upload.FileId)}，{exception.GetType().Name}: {exception}");
             return null;
         }
     }
