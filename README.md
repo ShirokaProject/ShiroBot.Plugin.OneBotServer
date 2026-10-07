@@ -1,6 +1,6 @@
 # ShiroBot OneBot Server
 
-当前发布：`v0.2.0`。本版本使用 SDK `0.9.8`，需要宿主 `0.9.8` 的新 ABI；旧宿主不兼容。
+当前发布：`v0.2.1`。本版本使用 SDK `0.9.8`，需要宿主 `0.9.8` 的新 ABI；旧宿主不兼容。
 
 `ShiroBot.Plugin.OneBotServer` 将 ShiroBot 已加载适配器的通用消息能力转换为 OneBot 11 服务，并在可用时提供 QQ 扩展能力。
 
