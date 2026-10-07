@@ -13,7 +13,7 @@ public sealed class RegistryTests
         {
             var path = Path.Combine(directory, "ids.json");
             var registry = await MessageIdRegistry.OpenAsync(path, 2);
-            var reference = new MessageReference(MessageScene.Group, 10, 20);
+            var reference = new OneBotMessageReference(MessageScene.Group, 10, 20);
             var ids = await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => registry.RegisterAsync(reference)));
             Assert.IsTrue(ids.All(id => id == 1));
             await registry.RegisterAsync(new(MessageScene.Group, 10, 21));

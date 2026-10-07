@@ -99,7 +99,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual(0, single.RetCode);
         Assert.AreEqual(Channel.Group("8"), facade.ForwardChannel);
         Assert.AreEqual(2L, facade.ForwardNodes.Single().UserId);
-        Assert.AreEqual((new MessageReference(MessageScene.Group, 8, 9), Channel.Direct("5")), facade.SingleForward);
+        Assert.AreEqual((new OneBotMessageReference(MessageScene.Group, 8, 9), Channel.Direct("5")), facade.SingleForward);
         Assert.AreEqual("2", JsonSerializer.SerializeToElement(reactions.Data).GetProperty("emojiLikesList")[0].GetProperty("tinyId").GetString());
         Directory.Delete(directory, recursive: true);
     }
@@ -479,7 +479,7 @@ public sealed class OneBotActionDispatcherTests
         public List<long> KickedUsers { get; } = [];
         public Channel? ForwardChannel { get; private set; }
         public IReadOnlyList<OneBotForwardNode> ForwardNodes { get; private set; } = [];
-        public (MessageReference, Channel)? SingleForward { get; private set; }
+        public (OneBotMessageReference, Channel)? SingleForward { get; private set; }
 
         public override string StorageDirectory => StoragePath;
 
@@ -534,21 +534,21 @@ public sealed class OneBotActionDispatcherTests
         public override Task<IReadOnlyList<string>> GetCustomFaceUrlsAsync() => Task.FromResult<IReadOnlyList<string>>(["face-1", "face-2"]);
         public override Task<IReadOnlyList<QFriend>> GetFriendEntitiesAsync(bool noCache) => Task.FromResult<IReadOnlyList<QFriend>>
         ([
-            new QFriend { UserId = 1, Nickname = "one", Category = new(10, "friends") },
-            new QFriend { UserId = 2, Nickname = "two", Category = new(10, "friends") },
+            new QFriend { UserId = "1", Nickname = "one", Category = new(10, "friends") },
+            new QFriend { UserId = "2", Nickname = "two", Category = new(10, "friends") },
         ]);
         public override Task SetNicknameAsync(string nickname) { Profile = (nickname, Profile.Item2); return Task.CompletedTask; }
         public override Task SetBioAsync(string bio) { Profile = (Profile.Item1, bio); return Task.CompletedTask; }
         public override Task<IReadOnlyList<QGroupMember>> GetGroupMemberEntitiesAsync(long groupId, bool noCache) => Task.FromResult<IReadOnlyList<QGroupMember>>
         ([
-            new QGroupMember { GroupId = groupId, UserId = 2, Nickname = "muted", ShutUpEndTime = DateTimeOffset.UtcNow.AddMinutes(1) },
-            new QGroupMember { GroupId = groupId, UserId = 3, Nickname = "free" },
+            new QGroupMember { GroupId = groupId.ToString(), UserId = "2", Nickname = "muted", ShutUpEndTime = DateTimeOffset.UtcNow.AddMinutes(1) },
+            new QGroupMember { GroupId = groupId.ToString(), UserId = "3", Nickname = "free" },
         ]);
         public override Task<string> GetUserNicknameAsync(long userId) => Task.FromResult("user-" + userId);
         public override Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt)
         { ForwardChannel = channel; ForwardNodes = nodes; return Task.FromResult("101"); }
-        public override Task<OneBotForwardNode> GetForwardNodeAsync(MessageReference source) => Task.FromResult(new OneBotForwardNode(2, "source", [OneBotSegment.Text("message")], null));
-        public override Task<string> ForwardSingleAsync(MessageReference source, Channel destination) { SingleForward = (source, destination); return Task.FromResult("102"); }
+        public override Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source) => Task.FromResult(new OneBotForwardNode(2, "source", [OneBotSegment.Text("message")], null));
+        public override Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination) { SingleForward = (source, destination); return Task.FromResult("102"); }
         public override Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId) =>
             Task.FromResult<IReadOnlyList<OneBotGroupFileEntry>>(folderId == "/"
                 ? [new("a", 5, "/", false), new("sub", 0, "/", true)]

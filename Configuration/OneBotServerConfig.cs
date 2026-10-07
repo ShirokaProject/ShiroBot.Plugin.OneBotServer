@@ -3,9 +3,14 @@ namespace ShiroBot.Plugin.OneBotServer.Configuration;
 /// <summary>Runtime configuration for the embedded OneBot v11 server.</summary>
 public sealed record OneBotServerConfig
 {
+    internal string? LegacyMessageIdRegistryPath { get; init; }
     public bool Enabled { get; init; } = true;
     public string Host { get; init; } = "127.0.0.1";
     public int Port { get; init; } = 5700;
+    /// <summary>Explicit adapter binding for one endpoint. If absent, exactly one loaded adapter instance is required.</summary>
+    public string? InstanceId { get; init; }
+    /// <summary>Multiple independently addressed endpoints. Each entry may override host, port, and access token.</summary>
+    public IReadOnlyList<OneBotServerInstanceConfig> Instances { get; init; } = [];
     public string SelfId { get; init; } = "0";
     public string? AccessToken { get; init; }
     public OneBotHttpServerConfig Http { get; init; } = new();
@@ -16,6 +21,14 @@ public sealed record OneBotServerConfig
     public OneBotEventFormatConfig EventFormat { get; init; } = new();
     public OneBotStorageConfig Storage { get; init; } = new();
     public OneBotServerLimits Limits { get; init; } = new();
+}
+
+public sealed record OneBotServerInstanceConfig
+{
+    public required string InstanceId { get; init; }
+    public string? Host { get; init; }
+    public int? Port { get; init; }
+    public string? AccessToken { get; init; }
 }
 
 public sealed record OneBotHttpServerConfig

@@ -4,7 +4,7 @@ using System.Text.Json;
 
 namespace ShiroBot.Plugin.OneBotServer.Infrastructure;
 
-public sealed record RequestFlag(string Kind, long? GroupId = null, long? Sequence = null, string? InitiatorUid = null, bool Filtered = false, string? RequestType = null, string? NativeToken = null);
+public sealed record RequestFlag(string Kind, long? GroupId = null, long? Sequence = null, string? InitiatorUid = null, bool Filtered = false, string? RequestType = null, string? NativeToken = null, string? EncodedRequest = null);
 
 public static class RequestFlagCodec
 {
@@ -43,7 +43,7 @@ public static class RequestFlagCodec
     private static void Validate(RequestFlag flag)
     {
         if (flag.Kind == "friend" && !string.IsNullOrWhiteSpace(flag.InitiatorUid)) return;
-        if (flag.Kind == "group" && flag.GroupId >= 0 && flag.Sequence >= 0 && flag.RequestType is "join_request" or "invited_join_request") return;
+        if (flag.Kind == "group" && flag.GroupId >= 0 && (flag.Sequence >= 0 || !string.IsNullOrWhiteSpace(flag.EncodedRequest)) && flag.RequestType is "join_request" or "invited_join_request") return;
         if (flag.Kind == "invitation" && flag.GroupId >= 0 && (flag.Sequence >= 0 || !string.IsNullOrWhiteSpace(flag.NativeToken))) return;
         throw new ArgumentException("Invalid OneBot request flag payload");
     }

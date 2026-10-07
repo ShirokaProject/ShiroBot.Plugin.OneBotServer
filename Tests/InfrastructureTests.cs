@@ -37,6 +37,7 @@ public sealed class InfrastructureTests
         {
             new RequestFlag("friend", InitiatorUid: "uid"),
             new RequestFlag("group", 10, 20, Filtered: true, RequestType: "join_request"),
+            new RequestFlag("group", 10, Filtered: true, RequestType: "join_request", EncodedRequest: "eyJSZXF1ZXN0SWQiOiJvcGFxdWUifQ=="),
             new RequestFlag("group", 10, 21, RequestType: "invited_join_request"),
             new RequestFlag("invitation", 10, 22),
             new RequestFlag("invitation", 10, NativeToken: "generic-token"),

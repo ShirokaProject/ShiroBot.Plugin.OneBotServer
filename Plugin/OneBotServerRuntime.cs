@@ -8,6 +8,9 @@ using ShiroBot.Plugin.OneBotServer.Transports;
 using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Abstractions;
 using ShiroBot.SDK.Models;
+using System.Globalization;
+using System.Text.Json;
+using System.Runtime.ExceptionServices;
 
 namespace ShiroBot.Plugin.OneBotServer.Plugin;
 
@@ -43,7 +46,8 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
             var registryPath = Path.IsPathRooted(config.Storage.MessageIdRegistryPath)
                 ? config.Storage.MessageIdRegistryPath
                 : Path.Combine(pluginDirectory, config.Storage.MessageIdRegistryPath);
-            var messages = await MessageIdRegistry.OpenAsync(registryPath, config.Storage.RegistryMaxEntries, runtimeToken).ConfigureAwait(false);
+            var legacyNextId = await MessageIdRegistry.ReadNextIdAsync(config.LegacyMessageIdRegistryPath, runtimeToken).ConfigureAwait(false);
+            var messages = await MessageIdRegistry.OpenAsync(registryPath, config.Storage.RegistryMaxEntries, runtimeToken, legacyNextId).ConfigureAwait(false);
             _state = new OneBotRuntimeState(messages, config.Storage.RegistryMaxEntries, config.Limits.EventQueueCapacity,
                 OneBotRuntimeState.DeriveRequestFlagKey(config.Storage.RequestFlagSecret, config.AccessToken));
             _actions = new OneBotActionDispatcher(context, _state);
@@ -78,9 +82,14 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
             _httpPosters = config.HttpTargets.Select(target => CreateHttpPoster(target, selfId)).ToArray();
             if (config.Heartbeat.Enabled) _heartbeatTask = RunHeartbeatAsync(config.Heartbeat.IntervalSeconds, runtimeToken);
         }
-        catch
+        catch (Exception startError)
         {
-            await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            try { await StopAsync(CancellationToken.None).ConfigureAwait(false); }
+            catch (Exception cleanupError)
+            {
+                throw new InvalidOperationException("OneBot runtime startup and cleanup both failed.", new AggregateException(startError, cleanupError));
+            }
+            ExceptionDispatchInfo.Capture(startError).Throw();
             throw;
         }
     }
@@ -88,7 +97,8 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
     public async Task PublishAsync(BotEvent source, OneBotEventFormatConfig format, CancellationToken cancellationToken)
     {
         var state = _state ?? throw new InvalidOperationException("The OneBot runtime is not started.");
-        var mapped = await OneBotEventMapper.MapAsync(source, format, state.Messages, cancellationToken).ConfigureAwait(false);
+        var eventWithSelfId = source.SelfId is null ? source with { SelfId = _selfId.ToString(CultureInfo.InvariantCulture) } : source;
+        var mapped = await OneBotEventMapper.MapAsync(eventWithSelfId, format, state.Messages, cancellationToken).ConfigureAwait(false);
         mapped = await EnrichGroupFileUrlsAsync(source, mapped, cancellationToken).ConfigureAwait(false);
         var evt = await PrepareEventAsync(source, mapped, state, cancellationToken).ConfigureAwait(false);
         state.Events.Push(evt);
@@ -103,16 +113,26 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
     {
         var runtimeCancellation = Interlocked.Exchange(ref _runtimeCancellation, null);
         if (runtimeCancellation is null) return;
-        await runtimeCancellation.CancelAsync().ConfigureAwait(false);
+        List<Exception>? errors = null;
+        try { await runtimeCancellation.CancelAsync().ConfigureAwait(false); }
+        catch (Exception exception) { (errors ??= []).Add(exception); }
 
-        if (_server is not null)
+        var server = _server;
+        _server = null;
+        if (server is not null)
         {
-            await _server.DisposeAsync().ConfigureAwait(false);
-            _server = null;
+            try { await server.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception exception) { (errors ??= []).Add(exception); }
         }
 
-        await Task.WhenAll(_reverseWebSocketTasks.Select(IgnoreCancellationAsync)).ConfigureAwait(false);
-        await IgnoreCancellationAsync(_heartbeatTask).ConfigureAwait(false);
+        var reverseTasks = _reverseWebSocketTasks.ToArray();
+        foreach (var task in reverseTasks)
+        {
+            try { await IgnoreCancellationAsync(task).ConfigureAwait(false); }
+            catch (Exception exception) { (errors ??= []).Add(exception); }
+        }
+        try { await IgnoreCancellationAsync(_heartbeatTask).ConfigureAwait(false); }
+        catch (Exception exception) { (errors ??= []).Add(exception); }
         _reverseWebSockets.Clear();
         _reverseWebSocketTasks.Clear();
         _heartbeatTask = null;
@@ -120,9 +140,14 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         _actions = null;
         _state = null;
         _selfId = 0;
-        foreach (var client in _httpClients) client.Dispose();
+        foreach (var client in _httpClients)
+        {
+            try { client.Dispose(); }
+            catch (Exception exception) { (errors ??= []).Add(exception); }
+        }
         _httpClients.Clear();
         runtimeCancellation.Dispose();
+        if (errors is { Count: > 0 }) throw new AggregateException("One or more OneBot runtime resources failed to stop cleanly.", errors);
         cancellationToken.ThrowIfCancellationRequested();
     }
 
@@ -162,7 +187,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                 if (noticeData.TryGetValue("file", out var value) && value is IDictionary<string, object?> noticeFile)
                 {
                     noticeFile["fid"] = upload.FileId;
-                    var noticeUrl = await TryResolveGroupFileUrlAsync(upload.GroupId, upload.FileId, cancellationToken).ConfigureAwait(false);
+                    var noticeUrl = await TryResolveGroupFileUrlAsync(ProtocolId(upload.GroupId), upload.FileId, cancellationToken).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(noticeUrl)) noticeFile["url"] = noticeUrl;
                 }
                 return mapped with { Data = noticeData };
@@ -188,7 +213,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         if (message.Scene != QMessageScene.Group)
         {
             foreach (var file in files)
-                _state?.Files.Remember(file.FileId, new PrivateFileReference(message.PeerId, file.FileHash ?? string.Empty, message.SenderId == _selfId));
+                _state?.Files.Remember(file.FileId, new PrivateFileReference(ProtocolId(message.PeerId), file.FileHash ?? string.Empty, ProtocolId(message.SenderId) == _selfId));
             return mapped;
         }
 
@@ -196,8 +221,8 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         var urls = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var file in files)
         {
-            _state?.GroupFiles.Remember(file.FileId, new GroupFileReference(message.PeerId, file.FileName, file.FileSize));
-            var url = await TryResolveGroupFileUrlAsync(message.PeerId, file.FileId, cancellationToken).ConfigureAwait(false);
+            _state?.GroupFiles.Remember(file.FileId, new GroupFileReference(ProtocolId(message.PeerId), file.FileName, file.FileSize));
+            var url = await TryResolveGroupFileUrlAsync(ProtocolId(message.PeerId), file.FileId, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrWhiteSpace(url)) urls[file.FileId] = url;
         }
         if (urls.Count == 0) return mapped;
@@ -238,7 +263,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var url = await context.GetPrivateFileUrlAsync(upload.UserId, upload.FileId, upload.FileHash ?? string.Empty, upload.IsSelf).ConfigureAwait(false);
+            var url = await context.GetPrivateFileUrlAsync(ProtocolId(upload.UserId), upload.FileId, upload.FileHash ?? string.Empty, upload.IsSelf).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(url))
             {
                 BotLog.Warning($"[OneBot/File] 私聊文件下载地址为空，user_id={upload.UserId}，file_id={SafeFileId(upload.FileId)}。");
@@ -289,13 +314,13 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
     private async Task<OneBotEvent> PrepareEventAsync(BotEvent source, OneBotEvent evt, OneBotRuntimeState state, CancellationToken cancellationToken)
     {
         var data = new Dictionary<string, object?>(evt.Data);
-        MessageReference? message = source switch
+        OneBotMessageReference? message = source switch
         {
             MessageEvent value => Reference(value.Channel, value.MessageId),
             MessageDeletedEvent value => Reference(value.Channel, value.MessageId),
-            PlatformEvent { Raw: QGroupEssenceMessageChange value } => new(MessageScene.Group, value.GroupId, value.MessageSeq),
-            PlatformEvent { Raw: QGroupMessageReaction value } => new(MessageScene.Group, value.GroupId, value.MessageSeq),
-            PlatformEvent { Raw: QMessageRecall value } => new(ToScene(value.Scene), value.PeerId, value.MessageSeq),
+            PlatformEvent { Raw: QGroupEssenceMessageChange value } => Reference(MessageScene.Group, value.GroupId, value.MessageId),
+            PlatformEvent { Raw: QGroupMessageReaction value } => Reference(MessageScene.Group, value.GroupId, value.MessageId),
+            PlatformEvent { Raw: QMessageRecall value } => Reference(ToScene(value.Scene), value.PeerId, value.MessageId),
             _ => null,
         };
         if (message is not null) data["message_id"] = await state.Messages.RegisterAsync(message, cancellationToken).ConfigureAwait(false);
@@ -314,42 +339,47 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                 data["flag"] = RequestFlagCodec.Encode(new RequestFlag("friend", InitiatorUid: request.InitiatorUid), state.RequestFlagKey);
                 break;
             case PlatformEvent { Raw: QGroupJoinRequest request }:
-                data["flag"] = RequestFlagCodec.Encode(new RequestFlag("group", request.GroupId, request.NotificationSeq, Filtered: request.IsFiltered, RequestType: "join_request"), state.RequestFlagKey);
-                break;
-            case PlatformEvent { Raw: QGroupInvitedJoinRequest request }:
-                data["flag"] = RequestFlagCodec.Encode(new RequestFlag("group", request.GroupId, request.NotificationSeq, RequestType: "invited_join_request"), state.RequestFlagKey);
+                data["flag"] = RequestFlagCodec.Encode(new RequestFlag("group", ProtocolId(request.GroupId), Filtered: request.IsFiltered, RequestType: "join_request", EncodedRequest: Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(request))), state.RequestFlagKey);
                 break;
             case PlatformEvent { Raw: QGroupInvitation invitation }:
-                data["flag"] = RequestFlagCodec.Encode(new RequestFlag("invitation", invitation.GroupId, invitation.InvitationSeq), state.RequestFlagKey);
+                data["flag"] = RequestFlagCodec.Encode(new RequestFlag("invitation", ProtocolId(invitation.GroupId), NativeToken: invitation.InvitationId), state.RequestFlagKey);
                 break;
             case PlatformEvent { Raw: QFriendFileUpload file }:
-                state.Files.Remember(file.FileId, new PrivateFileReference(file.UserId, file.FileHash ?? string.Empty, file.IsSelf));
+                state.Files.Remember(file.FileId, new PrivateFileReference(ProtocolId(file.UserId), file.FileHash ?? string.Empty, file.IsSelf));
                 break;
             case PlatformEvent { Raw: QGroupFileUpload file }:
-                state.GroupFiles.Remember(file.FileId, new GroupFileReference(file.GroupId, file.FileName, file.FileSize));
+                state.GroupFiles.Remember(file.FileId, new GroupFileReference(ProtocolId(file.GroupId), file.FileName, file.FileSize));
                 BotLog.Log($"[OneBot/File] 记录群文件，group_id={file.GroupId}，file_id={SafeFileId(file.FileId)}，name={file.FileName}。");
                 break;
             case PlatformEvent { Raw: QGroupMessageReaction reaction }:
-                data["count"] = state.Reactions.Update(reaction.GroupId, reaction.MessageSeq, reaction.FaceId, reaction.UserId, reaction.IsAdd);
+                data["count"] = state.Reactions.Update(ProtocolId(reaction.GroupId), ProtocolId(reaction.MessageId), reaction.FaceId, ProtocolId(reaction.UserId), reaction.IsAdd);
                 break;
         }
         return evt with { SelfId = evt.SelfId == 0 ? _selfId : evt.SelfId, Data = data };
     }
 
-    private static MessageReference? Reference(Channel channel, string sequence) =>
-        long.TryParse(channel.Id, out var peerId) && long.TryParse(sequence, out var messageSequence)
-            ? new MessageReference(channel.Type == ChannelType.Group ? MessageScene.Group : channel.Type == ChannelType.Direct ? MessageScene.Friend : MessageScene.Temp, peerId, messageSequence)
+    private static long ProtocolId(string value) => long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var id)
+        ? id
+        : throw new NotSupportedException("OneBot 11 numeric IDs cannot represent this adapter's opaque identifier.");
+
+    private static OneBotMessageReference? Reference(Channel channel, string sequence) =>
+        Reference(channel.Type == ChannelType.Group ? MessageScene.Group : channel.Type == ChannelType.Direct ? MessageScene.Friend : MessageScene.Temp, channel.Id, sequence);
+
+    private static OneBotMessageReference? Reference(MessageScene scene, string peerId, string sequence) =>
+        long.TryParse(peerId, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedPeer) && long.TryParse(sequence, NumberStyles.None, CultureInfo.InvariantCulture, out var parsedSequence)
+            ? new OneBotMessageReference(scene, parsedPeer, parsedSequence)
             : null;
     private static MessageScene ToScene(QMessageScene scene) => scene switch { QMessageScene.Group => MessageScene.Group, QMessageScene.Temp => MessageScene.Temp, _ => MessageScene.Friend };
 
     private static async Task RewriteReplyIdsAsync(MessageEvent source, IDictionary<string, object?> data, OneBotRuntimeState state, CancellationToken cancellationToken)
     {
-        if (!long.TryParse(source.Channel.Id, out var peerId)) return;
+        if (!source.Segments.OfType<QuoteSegment>().Any()) return;
+        var peerId = ProtocolId(source.Channel.Id);
         var replacements = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var quote in source.Segments.OfType<QuoteSegment>())
         {
-            if (!long.TryParse(quote.MessageId, out var sequence)) continue;
-            var id = await state.Messages.RegisterAsync(new MessageReference(
+            var sequence = ProtocolId(quote.MessageId);
+            var id = await state.Messages.RegisterAsync(new OneBotMessageReference(
                 source.Channel.Type == ChannelType.Group ? MessageScene.Group : source.Channel.Type == ChannelType.Direct ? MessageScene.Friend : MessageScene.Temp,
                 peerId, sequence), cancellationToken).ConfigureAwait(false);
             replacements[quote.MessageId] = id;

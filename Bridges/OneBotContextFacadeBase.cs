@@ -78,7 +78,7 @@ public abstract class OneBotContextFacadeBase : IOneBotContextFacade
     public virtual Task<string> GetUserNicknameAsync(long userId) => Missing<string>();
     public virtual Task<string> GetGroupNameAsync(long groupId) => Missing<string>();
     public virtual Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt) => Missing<string>();
-    public virtual Task<string> ForwardSingleAsync(MessageReference source, Channel destination) => Missing<string>();
-    public virtual Task<OneBotForwardNode> GetForwardNodeAsync(MessageReference source) => Missing<OneBotForwardNode>();
+    public virtual Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination) => Missing<string>();
+    public virtual Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source) => Missing<OneBotForwardNode>();
     public virtual Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId) => Missing<IReadOnlyList<OneBotGroupFileEntry>>();
 }

@@ -8,7 +8,7 @@
     <ShiroBotPluginSharedAssemblies>ShiroBot.Model.QQ;ShiroBot.Model.Discord;ShiroBot.Model.Telegram</ShiroBotPluginSharedAssemblies>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="ShiroBot.SDK" Version="0.9.1" />
+    <PackageReference Include="ShiroBot.SDK" Version="0.9.8" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>

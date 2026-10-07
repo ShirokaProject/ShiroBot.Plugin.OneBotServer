@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using ShiroBot.Plugin.OneBotServer.Bridges;
@@ -170,10 +171,10 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "send_private_msg": return await SendAsync(Channel.Direct(Id(p, "user_id").ToString()), Message(p));
             case "send_group_msg": return await SendAsync(Channel.Group(Id(p, "group_id").ToString()), Message(p));
             case "send_msg": return await SendAsync(Target(p), Message(p));
-            case "delete_msg": var delete = MessageReference(p); return await Void(context.DeleteAsync(delete.Sequence.ToString(), ToChannel(delete)));
+            case "delete_msg": var delete = OneBotMessageReference(p); return await Void(context.DeleteAsync(delete.Sequence.ToString(), ToChannel(delete)));
             case "get_msg":
                 var getMessageId = Id(p, "message_id");
-                var get = MessageReference(p);
+                var get = OneBotMessageReference(p);
                 return RewriteMessageId(await context.GetAsync(get.Sequence.ToString(), ToChannel(get)), getMessageId);
             case "get_forward_msg": return await context.GetForwardedAsync(FirstString(p, ["id", "forward_id", "message_id"]));
             case "send_like": return await Void(context.SendLikeAsync(Id(p, "user_id"), NonNegativeInt(p, "times", 1)));
@@ -190,7 +191,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "get_group_msg_history":
                 var groupChannel = Channel.Group(Id(p, "group_id").ToString());
                 return await RewriteMessageCollectionAsync(await context.GetHistoryAsync(groupChannel, ResolveOptionalSequence(p), NonNegativeInt(p, "count", 20)), groupChannel);
-            case "mark_msg_as_read": var read = MessageReference(p); return await Void(context.MarkAsReadAsync(read.Sequence.ToString(), ToChannel(read)));
+            case "mark_msg_as_read": var read = OneBotMessageReference(p); return await Void(context.MarkAsReadAsync(read.Sequence.ToString(), ToChannel(read)));
             case "get_cookies": return new { cookies = await GetCookiesAsync(OneBotParameters.String(p, "domain", "")) };
             case "get_csrf_token": return new { token = await GetCsrfTokenAsync() };
             case "get_credentials":
@@ -243,10 +244,10 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "get_essence_msg_list":
                 var essenceGroupId = Id(p, "group_id");
                 return await RewriteMessageCollectionAsync(await context.GetEssenceMessagesAsync(essenceGroupId, 0, int.MaxValue), Channel.Group(essenceGroupId.ToString()));
-            case "set_essence_msg": var essence = GroupMessageReference(p); return await Void(context.SetEssenceMessageAsync(essence.PeerId, essence.Sequence, true));
-            case "delete_essence_msg": var unessence = GroupMessageReference(p); return await Void(context.SetEssenceMessageAsync(unessence.PeerId, unessence.Sequence, false));
-            case "set_msg_emoji_like": var reaction = GroupMessageReference(p); return await Void(context.SetReactionAsync(reaction.PeerId, reaction.Sequence, OneBotParameters.String(p, "emoji_id"), Bool(p, "set", true)));
-            case "unset_msg_emoji_like": var unreaction = GroupMessageReference(p); return await Void(context.SetReactionAsync(unreaction.PeerId, unreaction.Sequence, OneBotParameters.String(p, "emoji_id"), false));
+            case "set_essence_msg": var essence = GroupOneBotMessageReference(p); return await Void(context.SetEssenceMessageAsync(essence.PeerId, essence.Sequence, true));
+            case "delete_essence_msg": var unessence = GroupOneBotMessageReference(p); return await Void(context.SetEssenceMessageAsync(unessence.PeerId, unessence.Sequence, false));
+            case "set_msg_emoji_like": var reaction = GroupOneBotMessageReference(p); return await Void(context.SetReactionAsync(reaction.PeerId, reaction.Sequence, OneBotParameters.String(p, "emoji_id"), Bool(p, "set", true)));
+            case "unset_msg_emoji_like": var unreaction = GroupOneBotMessageReference(p); return await Void(context.SetReactionAsync(unreaction.PeerId, unreaction.Sequence, OneBotParameters.String(p, "emoji_id"), false));
             case "fetch_emoji_like": return await FetchEmojiLikesAsync(p);
             case "set_qq_avatar": return await Void(context.SetAvatarAsync(OneBotParameters.String(p, "file")));
             case "fetch_custom_face": return (await context.GetCustomFaceUrlsAsync()).Take(NonNegativeInt(p, "count", 48)).ToArray();
@@ -290,7 +291,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
     private async Task<object?> FetchEmojiLikesAsync(IReadOnlyDictionary<string, JsonElement> p)
     {
         if (state is null) throw new NotSupportedException("Reaction data requires an initialized OneBot runtime.");
-        var reference = GroupMessageReference(p);
+        var reference = GroupOneBotMessageReference(p);
         var users = state.Reactions.GetUsers(reference.PeerId, reference.Sequence, OneBotParameters.String(p, "emoji_id"), NonNegativeInt(p, "count", 20));
         var likes = await Task.WhenAll(users.Select(async userId => new
         {
@@ -341,26 +342,26 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 case QInvitedJoinRequestNotification request:
                     invited.Add(new
                     {
-                        request_id = request.NotificationSeq,
-                        invitor_uin = request.InitiatorId,
-                        invitor_nick = await TryNameAsync(() => context.GetUserNicknameAsync(request.InitiatorId)),
-                        group_id = request.GroupId,
-                        group_name = await TryNameAsync(() => context.GetGroupNameAsync(request.GroupId)),
+                        request_id = ProtocolId(request.NotificationId),
+                        invitor_uin = ProtocolId(request.InitiatorId),
+                        invitor_nick = await TryNameAsync(() => context.GetUserNicknameAsync(ProtocolId(request.InitiatorId))),
+                        group_id = ProtocolId(request.GroupId),
+                        group_name = await TryNameAsync(() => context.GetGroupNameAsync(ProtocolId(request.GroupId))),
                         @checked = request.State != QRequestState.Pending,
-                        actor = request.OperatorId ?? 0,
+                        actor = request.OperatorId is null ? 0L : ProtocolId(request.OperatorId),
                     });
                     break;
                 case QJoinRequestNotification request:
                     joins.Add(new
                     {
-                        request_id = request.NotificationSeq,
-                        requester_uin = request.InitiatorId,
-                        requester_nick = await TryNameAsync(() => context.GetUserNicknameAsync(request.InitiatorId)),
+                        request_id = ProtocolId(request.NotificationId),
+                        requester_uin = ProtocolId(request.InitiatorId),
+                        requester_nick = await TryNameAsync(() => context.GetUserNicknameAsync(ProtocolId(request.InitiatorId))),
                         message = request.Comment ?? string.Empty,
-                        group_id = request.GroupId,
-                        group_name = await TryNameAsync(() => context.GetGroupNameAsync(request.GroupId)),
+                        group_id = ProtocolId(request.GroupId),
+                        group_name = await TryNameAsync(() => context.GetGroupNameAsync(ProtocolId(request.GroupId))),
                         @checked = request.State != QRequestState.Pending,
-                        actor = request.OperatorId ?? 0,
+                        actor = request.OperatorId is null ? 0L : ProtocolId(request.OperatorId),
                     });
                     break;
             }
@@ -371,15 +372,13 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
     private async Task<object?> GetIgnoredGroupRequestsAsync(IReadOnlyDictionary<string, JsonElement> p)
     {
         var groupId = OptionalId(p, "group_id");
-        var requests = await context.GetGroupNotificationsAsync(true, NonNegativeInt(p, "count", 50));
-        return requests.OfType<QJoinRequestNotification>()
-            .Where(request => groupId is null || request.GroupId == groupId)
-            .Select(request => new
-            {
-                group_id = request.GroupId,
-                user_id = request.InitiatorId,
-                flag = EncodeFlag(new RequestFlag("group", request.GroupId, request.NotificationSeq, Filtered: true, RequestType: "join_request")),
-            }).ToArray();
+        var requests = (await context.GetGroupNotificationsAsync(true, NonNegativeInt(p, "count", 50)))
+            .OfType<QJoinRequestNotification>()
+            .Where(request => groupId is null || ProtocolId(request.GroupId) == groupId)
+            .ToArray();
+        if (requests.Length != 0)
+            throw new NotSupportedException("Filtered QQ request listings do not include the native approval request object required to create a safe action flag.");
+        return Array.Empty<object>();
     }
 
     private async Task<object?> GetDoubtFriendRequestsAsync(IReadOnlyDictionary<string, JsonElement> p)
@@ -388,8 +387,8 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return await Task.WhenAll(requests.Select(async request => new
         {
             flag = request.InitiatorUid,
-            uin = request.InitiatorId.ToString(),
-            nick = await TryNameAsync(() => context.GetUserNicknameAsync(request.InitiatorId)),
+            uin = ProtocolId(request.InitiatorId).ToString(CultureInfo.InvariantCulture),
+            nick = await TryNameAsync(() => context.GetUserNicknameAsync(ProtocolId(request.InitiatorId))),
             source = request.Via ?? string.Empty,
             reason = string.Empty,
             msg = request.Comment ?? string.Empty,
@@ -438,7 +437,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 throw new OneBotParameterException("messages must contain node segments");
             if (data.TryGetProperty("id", out var id))
             {
-                var source = MessageReference(new Dictionary<string, JsonElement> { ["message_id"] = id.Clone() });
+                var source = OneBotMessageReference(new Dictionary<string, JsonElement> { ["message_id"] = id.Clone() });
                 nodes.Add(await context.GetForwardNodeAsync(source));
                 continue;
             }
@@ -455,7 +454,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
 
     private async Task<object?> ForwardSingleAsync(IReadOnlyDictionary<string, JsonElement> p, Channel destination)
     {
-        var nativeId = await context.ForwardSingleAsync(MessageReference(p), destination);
+        var nativeId = await context.ForwardSingleAsync(OneBotMessageReference(p), destination);
         return new { message_id = await RegisterMessageAsync(destination, nativeId) };
     }
 
@@ -555,7 +554,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         if (state is null) return int.TryParse(nativeId, out var raw) ? raw : throw new InvalidOperationException("The active adapter returned a non-numeric QQ message reference.");
         if (!long.TryParse(channel.Id, out var peerId) || !long.TryParse(nativeId, out var sequence))
             throw new InvalidOperationException("The active adapter returned a non-numeric QQ message reference.");
-        return await state.Messages.RegisterAsync(new MessageReference(Scene(channel), peerId, sequence));
+        return await state.Messages.RegisterAsync(new OneBotMessageReference(Scene(channel), peerId, sequence));
     }
 
     private string EncodeFlag(RequestFlag flag) => RequestFlagCodec.Encode(flag, state?.RequestFlagKey ?? throw new NotSupportedException("Request flags require an initialized OneBot runtime."));
@@ -644,7 +643,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         if (state is null) return new { message_id = nativeId };
         if (!long.TryParse(channel.Id, out var peerId) || !long.TryParse(nativeId, out var sequence))
             throw new InvalidOperationException("The active adapter returned a non-numeric QQ message reference.");
-        var messageId = await state.Messages.RegisterAsync(new MessageReference(Scene(channel), peerId, sequence));
+        var messageId = await state.Messages.RegisterAsync(new OneBotMessageReference(Scene(channel), peerId, sequence));
         return new { message_id = messageId };
     }
 
@@ -737,7 +736,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         catch (ArgumentException exception) { throw new OneBotParameterException(exception.Message); }
     }
 
-    private MessageReference MessageReference(IReadOnlyDictionary<string, JsonElement> p)
+    private OneBotMessageReference OneBotMessageReference(IReadOnlyDictionary<string, JsonElement> p)
     {
         if (state is null) throw new NotSupportedException("Message references require an initialized OneBot runtime.");
         var messageId = Id(p, "message_id");
@@ -746,9 +745,9 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return reference!;
     }
 
-    private MessageReference GroupMessageReference(IReadOnlyDictionary<string, JsonElement> p)
+    private OneBotMessageReference GroupOneBotMessageReference(IReadOnlyDictionary<string, JsonElement> p)
     {
-        var reference = MessageReference(p);
+        var reference = OneBotMessageReference(p);
         return reference.Scene == MessageScene.Group
             ? reference
             : throw new OneBotParameterException("message_id does not identify a group message");
@@ -804,7 +803,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         if (operation.TryGetProperty("delete", out var delete) && delete.ValueKind == JsonValueKind.True && eventJson.TryGetProperty("message_id", out var messageId))
         {
             var deleteParameters = new Dictionary<string, JsonElement> { ["message_id"] = messageId.Clone() };
-            var reference = MessageReference(deleteParameters);
+            var reference = OneBotMessageReference(deleteParameters);
             await context.DeleteAsync(reference.Sequence.ToString(), ToChannel(reference)).ConfigureAwait(false);
         }
         if (eventJson.TryGetProperty("group_id", out var eventGroupId) && eventJson.TryGetProperty("user_id", out var eventUserId))
@@ -840,7 +839,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         _ => MessageScene.Temp,
     };
 
-    private static Channel ToChannel(MessageReference reference) => reference.Scene == MessageScene.Group
+    private static Channel ToChannel(OneBotMessageReference reference) => reference.Scene == MessageScene.Group
         ? Channel.Group(reference.PeerId.ToString())
         : Channel.Direct(reference.PeerId.ToString());
 
@@ -860,12 +859,13 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         if (OptionalId(p, "message_seq") is long sequence) return sequence.ToString();
         if (OptionalId(p, "message_id") is not long messageId) return null;
         var parameters = new Dictionary<string, JsonElement> { ["message_id"] = JsonSerializer.SerializeToElement(messageId) };
-        return MessageReference(parameters).Sequence.ToString();
+        return OneBotMessageReference(parameters).Sequence.ToString();
     }
 
     private async Task<object?> RewriteMessageCollectionAsync(object? value, Channel channel)
     {
-        if (state is null || value is null || !long.TryParse(channel.Id, out var peerId)) return value;
+        if (state is null || value is null) return value;
+        var peerId = ProtocolId(channel.Id);
         var root = JsonSerializer.SerializeToElement(value);
         var messages = root.ValueKind == JsonValueKind.Array
             ? root
@@ -875,12 +875,12 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         foreach (var message in messages.EnumerateArray())
         {
             var item = message.EnumerateObject().ToDictionary(property => property.Name, property => JsonValue(property.Value));
-            if (message.TryGetProperty("message_id", out var nativeId) && long.TryParse(nativeId.ToString(), out var sequence))
-            {
-                var id = await state.Messages.RegisterAsync(new MessageReference(Scene(channel), peerId, sequence)).ConfigureAwait(false);
-                item["message_id"] = id;
-                if (item.ContainsKey("real_id")) item["real_id"] = id;
-            }
+            if (!message.TryGetProperty("message_id", out var nativeId))
+                throw new NotSupportedException("OneBot message history requires a numeric message identifier.");
+            var sequence = ProtocolId(nativeId.ToString());
+            var id = await state.Messages.RegisterAsync(new OneBotMessageReference(Scene(channel), peerId, sequence)).ConfigureAwait(false);
+            item["message_id"] = id;
+            if (item.ContainsKey("real_id")) item["real_id"] = id;
             rewritten.Add(item);
         }
         if (root.ValueKind == JsonValueKind.Array) return rewritten;
@@ -890,6 +890,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
     }
 
     private static long Id(IReadOnlyDictionary<string, JsonElement> p, string name) => OneBotParameters.RequiredInt(p, name);
+    private static long ProtocolId(string value) => long.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var id) ? id : throw new NotSupportedException("OneBot 11 numeric IDs cannot represent this adapter's opaque identifier.");
     private static long? OptionalId(IReadOnlyDictionary<string, JsonElement> p, string name) => OneBotParameters.OptionalInt(p, name);
     private static int NonNegativeInt(IReadOnlyDictionary<string, JsonElement> p, string name, int fallback)
     {

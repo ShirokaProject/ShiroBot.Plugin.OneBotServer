@@ -1,6 +1,6 @@
 # ShiroBot OneBot Server
 
-`ShiroBot.Plugin.OneBotServer` 将 ShiroBot 当前加载的 QQ Adapter 能力转换为 OneBot 11 服务。
+`ShiroBot.Plugin.OneBotServer` 将 ShiroBot 已加载适配器的通用消息能力转换为 OneBot 11 服务，并在可用时提供 QQ 扩展能力。
 
 插件支持：
 
@@ -17,12 +17,13 @@
 ## 运行要求
 
 - .NET 10
-- ShiroBot 0.9.1 或更高的 0.9.x 版本
-- ShiroBot API 0.9
-- `ShiroBot.Model.QQ` 0.9.1 或更高版本
-- 至少一个已加载的 QQ Adapter
+- ShiroBot 0.9.8 或更高版本
+- ShiroBot API 0.9.2
+- `ShiroBot.Model.QQ` 0.9.8 或更高版本
+- `ShiroBot.SDK` NuGet 0.9.8
+- 至少一个已加载的适配器实例
 
-插件本身不连接 QQ。所有消息、群管理、好友管理、文件和 QQ 扩展操作都由当前 ShiroBot QQ Adapter 执行。
+插件本身不连接平台。普通消息 API 使用 SDK 的平台无关模型；群管理、好友、文件和其他 QQ 扩展 action 需要适配器实现相应的可选 SDK 接口，否则会返回明确的 unsupported 错误。
 
 如果当前 Adapter 不支持某项能力，插件会返回正常的 OneBot 失败响应：
 
@@ -60,6 +61,9 @@ plugins/
 enabled = true
 host = "127.0.0.1"
 port = 5700
+
+# 单实例部署建议显式绑定实例 ID；未填写时仅在宿主恰有一个适配器实例时自动选择。
+# instance_id = "qq-main"
 
 # 设为 "0" 时，插件会从当前 QQ Adapter 自动获取登录账号。
 self_id = "0"
@@ -123,6 +127,26 @@ retention_days = 7
 max_web_socket_connections = 32
 event_queue_capacity = 1024
 ```
+
+### 多个适配器实例
+
+每个 `[[instances]]` 会启动独立 OneBot 监听端点。多实例时必须显式指定 `instance_id`，且各监听地址/端口不能冲突；标准 OneBot 请求没有实例选择字段，因此每个适配器实例需要自己的端口。`host`、`port` 和 `access_token` 可按实例覆盖顶层默认值。请求 flag 密钥、消息 ID 映射和插件存储目录均按实例隔离。实例 ID 是宿主提供的不透明字符串，不需要是 QQ 数字账号。
+
+```toml
+[[instances]]
+instance_id = "qq-main"
+host = "127.0.0.1"
+port = 5700
+access_token = "main-token"
+
+[[instances]]
+instance_id = "qq-alt"
+host = "127.0.0.1"
+port = 5701
+access_token = "alt-token"
+```
+
+其他 HTTP、WebSocket、回调和事件格式选项仍可使用顶层配置。配置引用未加载/已移除的适配器实例时会明确报错并尝试恢复上一份配置，不会切换到默认实例。
 
 如果只使用反向 WebSocket，可以关闭本地 HTTP 和正向 WebSocket：
 

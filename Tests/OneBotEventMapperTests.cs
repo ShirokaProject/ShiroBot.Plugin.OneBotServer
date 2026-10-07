@@ -19,11 +19,11 @@ public sealed class OneBotEventMapperTests
         var timestamp = DateTimeOffset.FromUnixTimeSeconds(1_700_000_001);
         var raw = new QFriendMessage
         {
-            PeerId = 20002,
-            MessageSeq = 30003,
-            SenderId = 10001,
+            PeerId = "20002",
+            MessageId = "30003",
+            SenderId = "10001",
             Time = timestamp,
-            Friend = new QFriend { UserId = 20002, Nickname = "friend" }
+            Friend = new QFriend { UserId = "20002", Nickname = "friend" }
         };
         var message = new MessageEvent
         {
@@ -48,7 +48,7 @@ public sealed class OneBotEventMapperTests
             Assert.AreEqual("message_sent", mapped.PostType);
             Assert.AreEqual(1, mapped.Data["message_id"]);
             Assert.IsTrue(registry.TryResolve(1, out var reference));
-            Assert.AreEqual(new MessageReference(MessageScene.Friend, 20002, 30003), reference);
+            Assert.AreEqual(new OneBotMessageReference(MessageScene.Friend, 20002, 30003), reference);
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(mapped));
             Assert.AreEqual(JsonValueKind.Number, json.RootElement.GetProperty("self_id").ValueKind);
         }
@@ -59,16 +59,14 @@ public sealed class OneBotEventMapperTests
     }
 
     [TestMethod]
-    public void Map_InvalidSelfIdFallsBackToZero()
+    public void Map_RejectsNonnumericSelfId()
     {
-        var mapped = OneBotEventMapper.Map(new FriendRequestEvent
+        Assert.ThrowsException<NotSupportedException>(() => OneBotEventMapper.Map(new FriendRequestEvent
         {
             Platform = "test",
             SelfId = "not-a-number",
             UserId = "42"
-        }, Format);
-
-        Assert.AreEqual(0L, mapped.SelfId);
+        }, Format));
     }
 
     [TestMethod]
@@ -77,11 +75,11 @@ public sealed class OneBotEventMapperTests
         const string fileId = "/2052811f-933c-4e61-8597-781769c47a0a";
         var raw = new QGroupMessage
         {
-            PeerId = 915449089,
-            MessageSeq = 123,
-            SenderId = 1034028486,
-            Group = new QGroup { GroupId = 915449089, GroupName = "test" },
-            GroupMember = new QGroupMember { GroupId = 915449089, UserId = 1034028486, Nickname = "user" },
+            PeerId = "915449089",
+            MessageId = "123",
+            SenderId = "1034028486",
+            Group = new QGroup { GroupId = "915449089", GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = "915449089", UserId = "1034028486", Nickname = "user" },
             Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
         };
         var message = new MessageEvent
@@ -128,17 +126,15 @@ public sealed class OneBotEventMapperTests
     }
 
     [TestMethod]
-    public void Map_InvalidPlatformSelfIdDoesNotFallBackToRawPayload()
+    public void Map_RejectsInvalidTopLevelSelfIdEvenWhenRawPayloadHasOne()
     {
-        var source = Platform(new QGroupDisband { SelfId = 10001, GroupId = 10, OperatorId = 20 }) with { SelfId = "invalid" };
+        var source = Platform(new QGroupDisband { SelfId = "10001", GroupId = "10", OperatorId = "20" }) with { SelfId = "invalid" };
 
-        var mapped = OneBotEventMapper.Map(source, Format);
-
-        Assert.AreEqual(0L, mapped.SelfId);
+        Assert.ThrowsException<NotSupportedException>(() => OneBotEventMapper.Map(source, Format));
     }
 
     [TestMethod]
-    public async Task MapAsync_QqNoticesUsePayloadTimeAndRegisterEveryMessageReference()
+    public async Task MapAsync_QqNoticesUsePayloadTimeAndRegisterEveryOneBotMessageReference()
     {
         var time = DateTimeOffset.FromUnixTimeSeconds(1_700_000_002);
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "ids.json");
@@ -147,15 +143,15 @@ public sealed class OneBotEventMapperTests
             var registry = await MessageIdRegistry.OpenAsync(path);
             var recall = await OneBotEventMapper.MapAsync(Platform(new QMessageRecall
             {
-                Time = time, SelfId = 10001, Scene = QMessageScene.Group, PeerId = 10, MessageSeq = 20, SenderId = 30, OperatorId = 40
+                Time = time, SelfId = "10001", Scene = QMessageScene.Group, PeerId = "10", MessageId = "20", SenderId = "30", OperatorId = "40"
             }), Format, registry);
             var reaction = await OneBotEventMapper.MapAsync(Platform(new QGroupMessageReaction
             {
-                Time = time, SelfId = 10001, GroupId = 11, UserId = 31, MessageSeq = 21, FaceId = "128", IsAdd = false
+                Time = time, SelfId = "10001", GroupId = "11", UserId = "31", MessageId = "21", FaceId = "128", IsAdd = false
             }), Format, registry);
             var essence = await OneBotEventMapper.MapAsync(Platform(new QGroupEssenceMessageChange
             {
-                Time = time, SelfId = 10001, GroupId = 12, MessageSeq = 22, OperatorId = 42, IsSet = true
+                Time = time, SelfId = "10001", GroupId = "12", MessageId = "22", OperatorId = "42", IsSet = true
             }), Format, registry);
 
             Assert.AreEqual(1_700_000_002L, recall.Time);
@@ -176,16 +172,16 @@ public sealed class OneBotEventMapperTests
     [TestMethod]
     public void Map_ProtocolSpecificNoticesHaveExpectedShapes()
     {
-        var invited = OneBotEventMapper.Map(Platform(new QGroupInvitedJoinRequest
+        var invited = OneBotEventMapper.Map(Platform(new QGroupJoinRequest
         {
-            SelfId = 10001, GroupId = 10, NotificationSeq = 20, InitiatorId = 30, TargetUserId = 40
+            SelfId = "10001", GroupId = "10", RequestId = "invite-token", UserId = "30", IsInvited = true
         }), Format);
-        var dismissed = OneBotEventMapper.Map(Platform(new QGroupDisband { SelfId = 10001, GroupId = 10, OperatorId = 30 }), Format);
-        var wholeMute = OneBotEventMapper.Map(Platform(new QGroupWholeMute { SelfId = 10001, GroupId = 10, OperatorId = 30, IsMute = true }), Format);
-        var nudge = OneBotEventMapper.Map(Platform(new QGroupNudge { SelfId = 10001, GroupId = 10, SenderId = 30, ReceiverId = 40 }), Format);
-        var kicked = OneBotEventMapper.Map(Platform(new QGroupMemberDecrease { SelfId = 10001, GroupId = 10, UserId = 10001, OperatorId = 30 }), Format);
+        var dismissed = OneBotEventMapper.Map(Platform(new QGroupDisband { SelfId = "10001", GroupId = "10", OperatorId = "30" }), Format);
+        var wholeMute = OneBotEventMapper.Map(Platform(new QGroupWholeMute { SelfId = "10001", GroupId = "10", OperatorId = "30", IsMute = true }), Format);
+        var nudge = OneBotEventMapper.Map(Platform(new QGroupNudge { SelfId = "10001", GroupId = "10", SenderId = "30", ReceiverId = "40" }), Format);
+        var kicked = OneBotEventMapper.Map(Platform(new QGroupMemberDecrease { SelfId = "10001", GroupId = "10", UserId = "10001", OperatorId = "30" }), Format);
 
-        Assert.AreEqual("add", invited.SubType);
+        Assert.AreEqual("invite", invited.SubType);
         Assert.AreEqual("group_dismiss", dismissed.NoticeType);
         Assert.AreEqual(30L, dismissed.Data["operator_id"]);
         Assert.AreEqual(0L, wholeMute.Data["user_id"]);
@@ -200,7 +196,7 @@ public sealed class OneBotEventMapperTests
     {
         var mapped = OneBotEventMapper.Map(Platform(new QGroupFileUpload
         {
-            SelfId = 10001, GroupId = 915449089, UserId = 1034028486, FileId = "/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", FileName = "283622490.json", FileSize = 929603
+            SelfId = "10001", GroupId = "915449089", UserId = "1034028486", FileId = "/c3cb6ca9-f3cd-4585-be1a-b1cce23420d8", FileName = "283622490.json", FileSize = 929603
         }), Format);
 
         Assert.AreEqual("group_upload", mapped.NoticeType);
@@ -217,11 +213,11 @@ public sealed class OneBotEventMapperTests
     {
         var raw = new QGroupMessage
         {
-            PeerId = 3,
-            MessageSeq = 1,
-            SenderId = 4,
-            Group = new QGroup { GroupId = 3, GroupName = "g" },
-            GroupMember = new QGroupMember { GroupId = 3, UserId = 4, Nickname = "u" },
+            PeerId = "3",
+            MessageId = "1",
+            SenderId = "4",
+            Group = new QGroup { GroupId = "3", GroupName = "g" },
+            GroupMember = new QGroupMember { GroupId = "3", UserId = "4", Nickname = "u" },
             Segments = [new QIncomingMarketFace("emoji-id", "https://example.test/e.gif") { EmojiPackageId = 7, Key = "k", Summary = "s" }]
         };
         var mapped = OneBotEventMapper.Map(new MessageEvent
@@ -254,7 +250,7 @@ public sealed class OneBotEventMapperTests
         Assert.AreEqual("friend_recall", privateRecall.NoticeType);
         Assert.IsFalse(privateRecall.Data.ContainsKey("group_id"));
         Assert.AreEqual("group_recall", groupRecall.NoticeType);
-        Assert.AreEqual("30", groupRecall.Data["group_id"]);
+        Assert.AreEqual(30L, groupRecall.Data["group_id"]);
     }
 
     [TestMethod]
@@ -280,7 +276,7 @@ public sealed class OneBotEventMapperTests
             Assert.AreEqual(1, mappedMessage.Data["message_id"]);
             Assert.AreEqual(2, mappedRecall.Data["message_id"]);
             Assert.IsTrue(registry.TryResolve(2, out var reference));
-            Assert.AreEqual(new MessageReference(MessageScene.Friend, 2, 21), reference);
+            Assert.AreEqual(new OneBotMessageReference(MessageScene.Friend, 2, 21), reference);
         }
         finally
         {
@@ -288,10 +284,55 @@ public sealed class OneBotEventMapperTests
         }
     }
 
+    [TestMethod]
+    public void Map_RejectsOpaqueOfficialAndQQIdentifiersAtTheProtocolBoundary()
+    {
+        var official = Platform(new QGroupInvitation
+        {
+            SelfId = "self-openid", GroupId = "group-openid", InitiatorId = "user-openid", InvitationId = "opaque-token"
+        });
+
+        Assert.ThrowsException<NotSupportedException>(() => OneBotEventMapper.Map(official, Format));
+
+        var numeric = Platform(new QGroupInvitation
+        {
+            SelfId = "10001", GroupId = "12345", InitiatorId = "67890", InvitationId = "opaque-token"
+        });
+        var mapped = OneBotEventMapper.Map(numeric, Format);
+        Assert.AreEqual(12345L, mapped.Data["group_id"]);
+        Assert.AreEqual(67890L, mapped.Data["user_id"]);
+
+        var opaqueMessage = new MessageEvent
+        {
+            Platform = "qq", SelfId = "bot-openid", MessageId = "message-openid",
+            Channel = Channel.Direct("user-openid"), Sender = new User("user-openid"),
+            Segments = [new TextSegment("hello")], Timestamp = DateTimeOffset.UnixEpoch
+        };
+        Assert.ThrowsException<NotSupportedException>(() => OneBotEventMapper.Map(opaqueMessage, Format));
+    }
+
+    [TestMethod]
+    public void Map_GroupRequestFlagPreservesTheNativeApprovalCredential()
+    {
+        var request = new QGroupJoinRequest
+        {
+            SelfId = "10001", GroupId = "10", UserId = "20", RequestId = "native:join:opaque",
+            IsFiltered = true, Comment = "hello", IsInvited = false
+        };
+
+        var mapped = OneBotEventMapper.Map(Platform(request), Format);
+        var flag = (string)mapped.Data["flag"]!;
+        var decoded = RequestFlagCodec.Decode(flag);
+        var restored = JsonSerializer.Deserialize<QGroupJoinRequest>(Convert.FromBase64String(decoded.EncodedRequest!));
+
+        Assert.AreEqual(request, restored);
+        Assert.AreEqual("add", mapped.SubType);
+    }
+
     private static PlatformEvent Platform(QEventPayload payload) => new()
     {
         Platform = "qq",
-        SelfId = payload.SelfId.ToString(),
+        SelfId = payload.SelfId?.ToString(),
         Kind = payload.GetType().Name,
         Raw = payload
     };

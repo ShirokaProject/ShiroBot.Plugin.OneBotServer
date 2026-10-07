@@ -28,9 +28,9 @@ public sealed class CqAndSegmentTests
     [TestMethod]
     public void MessageSegments_MapsQqAndOneBotToNativeAndGenericSdkModels()
     {
-        var fromQq = MessageSegments.FromQq([new QIncomingText("hello"), new QIncomingMention(42, "Alice"), new QIncomingImage("image", "https://example.test/image") { Summary = "pic" }]);
+        var fromQq = MessageSegments.FromQq([new QIncomingText("hello"), new QIncomingMention("42", "Alice"), new QIncomingImage("image", "https://example.test/image") { Summary = "pic" }]);
         Assert.AreEqual("text", fromQq[0].Type);
-        Assert.AreEqual(42L, fromQq[1].Data["qq"]);
+        Assert.AreEqual("42", fromQq[1].Data["qq"]);
         var outgoing = MessageSegments.ToQq(CqCode.Parse("hello[CQ:at,qq=42][CQ:image,file=base64://aW1n]"));
         Assert.IsInstanceOfType<QOutgoingText>(outgoing[0]);
         Assert.IsInstanceOfType<QOutgoingMention>(outgoing[1]);

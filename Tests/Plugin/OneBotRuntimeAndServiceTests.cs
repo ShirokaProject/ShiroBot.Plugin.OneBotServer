@@ -26,7 +26,7 @@ public sealed class OneBotRuntimeAndServiceTests
     }
 
     [TestMethod]
-    public async Task Runtime_PrefersLiveSelfIdAndPersistsInboundMessageReference()
+    public async Task Runtime_PrefersLiveSelfIdAndPersistsInboundOneBotMessageReference()
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RuntimeFacade();
@@ -64,11 +64,11 @@ public sealed class OneBotRuntimeAndServiceTests
         await runtime.StartAsync(config, CancellationToken.None);
         var raw = new QGroupMessage
         {
-            PeerId = groupId,
-            MessageSeq = 123,
-            SenderId = 1034028486,
-            Group = new QGroup { GroupId = groupId, GroupName = "test" },
-            GroupMember = new QGroupMember { GroupId = groupId, UserId = 1034028486, Nickname = "user" },
+            PeerId = groupId.ToString(),
+            MessageId = "123",
+            SenderId = "1034028486",
+            Group = new QGroup { GroupId = groupId.ToString(), GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = groupId.ToString(), UserId = "1034028486", Nickname = "user" },
             Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
         };
 
@@ -98,11 +98,11 @@ public sealed class OneBotRuntimeAndServiceTests
         var runtime = new OneBotServerRuntime(facade, Path.GetTempPath());
         var raw = new QGroupMessage
         {
-            PeerId = groupId,
-            MessageSeq = 123,
-            SenderId = 1034028486,
-            Group = new QGroup { GroupId = groupId, GroupName = "test" },
-            GroupMember = new QGroupMember { GroupId = groupId, UserId = 1034028486, Nickname = "user" },
+            PeerId = groupId.ToString(),
+            MessageId = "123",
+            SenderId = "1034028486",
+            Group = new QGroup { GroupId = groupId.ToString(), GroupName = "test" },
+            GroupMember = new QGroupMember { GroupId = groupId.ToString(), UserId = "1034028486", Nickname = "user" },
             Segments = [new QIncomingFile(fileId, "283622490.json", 929603)]
         };
         var source = new MessageEvent
@@ -150,7 +150,7 @@ public sealed class OneBotRuntimeAndServiceTests
             Platform = "qq", SelfId = "3900952625", Kind = nameof(QGroupFileUpload),
             Raw = new QGroupFileUpload
             {
-                SelfId = 3900952625, GroupId = groupId, UserId = 1034028486, FileId = fileId, FileName = "283622490.json", FileSize = 929603
+                SelfId = "3900952625", GroupId = groupId.ToString(), UserId = "1034028486", FileId = fileId, FileName = "283622490.json", FileSize = 929603
             }
         };
         var mapped = OneBotEventMapper.Map(source, new OneBotEventFormatConfig());

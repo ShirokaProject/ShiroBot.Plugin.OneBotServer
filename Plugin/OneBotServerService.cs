@@ -33,8 +33,13 @@ public sealed class OneBotServerService : IAsyncDisposable
 
     public async Task PublishAsync(BotEvent evt)
     {
-        if (!_started) return;
-        await _runtime.PublishAsync(evt, _config.EventFormat, _shutdown.Token).ConfigureAwait(false);
+        await _lifecycle.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+        try
+        {
+            if (!_started || _shutdown.IsCancellationRequested) return;
+            await _runtime.PublishAsync(evt, _config.EventFormat, _shutdown.Token).ConfigureAwait(false);
+        }
+        finally { _lifecycle.Release(); }
     }
 
     public async Task ReconfigureAsync(OneBotServerConfig config)
@@ -44,15 +49,15 @@ public sealed class OneBotServerService : IAsyncDisposable
         {
             var previous = _config;
             var wasStarted = _started;
-            if (_started)
-            {
-                await _runtime.StopAsync(CancellationToken.None).ConfigureAwait(false);
-                _started = false;
-            }
-
-            if (_shutdown.IsCancellationRequested) return;
             try
             {
+                if (_started)
+                {
+                    _started = false;
+                    await _runtime.StopAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+
+                if (_shutdown.IsCancellationRequested) return;
                 if (config.Enabled)
                 {
                     await _runtime.StartAsync(config, _shutdown.Token).ConfigureAwait(false);
@@ -62,6 +67,7 @@ public sealed class OneBotServerService : IAsyncDisposable
             }
             catch (Exception reloadError)
             {
+                _started = false;
                 _config = previous;
                 if (wasStarted && previous.Enabled)
                 {
@@ -90,11 +96,17 @@ public sealed class OneBotServerService : IAsyncDisposable
     {
         await _shutdown.CancelAsync().ConfigureAwait(false);
         await _lifecycle.WaitAsync().ConfigureAwait(false);
+        List<Exception>? errors = null;
         try
         {
-            if (_started) await _runtime.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _started = false;
-            await _runtime.DisposeAsync().ConfigureAwait(false);
+            if (_started)
+            {
+                _started = false;
+                try { await _runtime.StopAsync(CancellationToken.None).ConfigureAwait(false); }
+                catch (Exception exception) { (errors ??= []).Add(exception); }
+            }
+            try { await _runtime.DisposeAsync().ConfigureAwait(false); }
+            catch (Exception exception) { (errors ??= []).Add(exception); }
         }
         finally
         {
@@ -102,5 +114,6 @@ public sealed class OneBotServerService : IAsyncDisposable
             _lifecycle.Dispose();
             _shutdown.Dispose();
         }
+        if (errors is { Count: > 0 }) throw new AggregateException("One or more OneBot service resources failed to dispose cleanly.", errors);
     }
 }

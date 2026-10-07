@@ -35,7 +35,7 @@ public sealed class OneBotServerPlugin : PluginBase
         _config = Context.Config.Load<OneBotServerConfig>();
         Context.Config.Save(_config);
         _configurationFingerprint = Fingerprint(_config);
-        _service = new OneBotServerService(new OneBotServerRuntime(new OneBotContextFacade(Context), Context.PluginDirectory), _config);
+        _service = new OneBotServerService(new OneBotMultiInstanceRuntime(Context, Context.PluginDirectory), _config);
         _configWatcher = Context.Config.Watch<OneBotServerConfig>(ApplyConfiguration);
         await _service.StartAsync().ConfigureAwait(false);
         BotLog.Info("OneBot Server plugin loaded.");
@@ -75,7 +75,7 @@ public sealed class OneBotServerPlugin : PluginBase
                 await _service!.ReconfigureAsync(config).ConfigureAwait(false);
                 _config = config;
                 _configurationFingerprint = fingerprint;
-                BotLog.Info($"OneBot Server configuration reloaded; listening on {config.Host}:{config.Port}.");
+                BotLog.Info($"OneBot Server configuration reloaded for {config.Instances.Count} configured instance(s).");
             }
             finally { _configurationGate.Release(); }
         }

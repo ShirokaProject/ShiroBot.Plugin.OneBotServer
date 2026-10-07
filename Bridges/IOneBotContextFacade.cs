@@ -75,8 +75,8 @@ public interface IOneBotContextFacade
     Task<string> GetUserNicknameAsync(long userId);
     Task<string> GetGroupNameAsync(long groupId);
     Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt);
-    Task<string> ForwardSingleAsync(MessageReference source, Channel destination);
-    Task<OneBotForwardNode> GetForwardNodeAsync(MessageReference source);
+    Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination);
+    Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source);
     Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId);
 }
 
