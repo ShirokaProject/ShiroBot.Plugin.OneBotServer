@@ -26,8 +26,7 @@ jobs:
         run: |
           mkdir package
           cp publish/ShiroBot.Plugin.OneBotServer.dll package/
-          if [ -f publish/ShiroBot.Plugin.OneBotServer.pdb ]; then cp publish/ShiroBot.Plugin.OneBotServer.pdb package/; fi
-          (cd package && zip -9 ../ShiroBot.Plugin.OneBotServer.zip ./*)
+          (cd package && zip -9 ../ShiroBot.Plugin.OneBotServer.zip ShiroBot.Plugin.OneBotServer.dll)
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
