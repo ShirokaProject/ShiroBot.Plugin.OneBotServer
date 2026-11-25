@@ -266,6 +266,85 @@ public sealed class OneBotTransportIntegrationTests
         Assert.AreEqual(10001L, lifecycle.GetProperty("self_id").GetInt64());
     }
 
+    [TestMethod]
+    public async Task ReverseWebSocket_WriterFailureEndsConnectionAndReleasesPendingPublish()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var socket = new FailingSendWebSocket();
+        var client = new OneBotReverseWebSocketClient(
+            new OneBotReverseWebSocketOptions(new Uri("ws://localhost/reverse"), "10001", OneBotWebSocketRole.Universal,
+                SocketQueueCapacity: 1),
+            new RecordingActionHandler());
+
+        var connection = client.RunConnectedAsync(socket, timeout.Token);
+        await socket.ReceiveStarted.Task.WaitAsync(timeout.Token);
+        await socket.SendStarted.Task.WaitAsync(timeout.Token);
+
+        await client.PublishEventAsync(new { post_type = "message" }, timeout.Token);
+        var pendingPublish = client.PublishEventAsync(new { post_type = "message" }, timeout.Token);
+        Assert.IsFalse(pendingPublish.IsCompleted);
+
+        socket.FailSend.SetResult();
+
+        await pendingPublish.WaitAsync(timeout.Token);
+        var failure = await Assert.ThrowsExceptionAsync<WebSocketException>(() => connection.WaitAsync(timeout.Token));
+        Assert.AreEqual("Test send failure", failure.Message);
+        Assert.AreEqual(WebSocketState.Aborted, socket.State);
+        await client.PublishEventAsync(new { post_type = "message" }, timeout.Token);
+    }
+
+    [TestMethod]
+    public async Task ReverseWebSocket_ReconnectsAndPublishesEventsOnTheNewSocket()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var received = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var connections = 0;
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var app = builder.Build();
+        app.UseWebSockets();
+        app.MapGet("/reverse", async context =>
+        {
+            using var socket = await context.WebSockets.AcceptWebSocketAsync();
+            var buffer = new byte[4096];
+            await socket.ReceiveAsync(buffer, timeout.Token); // connect lifecycle
+            if (Interlocked.Increment(ref connections) == 1)
+            {
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
+                return;
+            }
+
+            reconnected.TrySetResult();
+            var result = await socket.ReceiveAsync(buffer, timeout.Token);
+            using var document = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
+            received.TrySetResult(document.RootElement.GetProperty("post_type").GetString());
+        });
+        await app.StartAsync(timeout.Token);
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        var endpoint = new Uri(address.Replace("http://", "ws://", StringComparison.Ordinal) + "/reverse");
+        var client = new OneBotReverseWebSocketClient(
+            new OneBotReverseWebSocketOptions(endpoint, "10001", OneBotWebSocketRole.Universal,
+                ReconnectDelay: TimeSpan.FromMilliseconds(10)),
+            new RecordingActionHandler());
+
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+        var run = client.RunAsync(shutdown.Token);
+        try
+        {
+            await reconnected.Task.WaitAsync(timeout.Token);
+            await client.PublishEventAsync(new { post_type = "message" }, timeout.Token);
+            Assert.AreEqual("message", await received.Task.WaitAsync(timeout.Token));
+        }
+        finally
+        {
+            await shutdown.CancelAsync();
+            try { await run.WaitAsync(timeout.Token); }
+            catch (OperationCanceledException) when (!timeout.IsCancellationRequested) { }
+        }
+    }
+
     private static HttpClient CreateClient(OneBotKestrelServer server)
     {
         var address = server.Addresses.Single();
@@ -278,6 +357,45 @@ public sealed class OneBotTransportIntegrationTests
         var result = await socket.ReceiveAsync(buffer, CancellationToken.None);
         Assert.AreEqual(WebSocketMessageType.Text, result.MessageType);
         return JsonDocument.Parse(buffer.AsMemory(0, result.Count));
+    }
+
+    private sealed class FailingSendWebSocket : WebSocket
+    {
+        private WebSocketState state = WebSocketState.Open;
+
+        public TaskCompletionSource ReceiveStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource SendStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FailSend { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override WebSocketCloseStatus? CloseStatus => null;
+        public override string? CloseStatusDescription => null;
+        public override string? SubProtocol => null;
+        public override WebSocketState State => state;
+
+        public override void Abort() => state = WebSocketState.Aborted;
+        public override void Dispose() { }
+
+        public override Task CloseAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken) =>
+            CloseOutputAsync(closeStatus, statusDescription, cancellationToken);
+
+        public override Task CloseOutputAsync(WebSocketCloseStatus closeStatus, string? statusDescription, CancellationToken cancellationToken)
+        {
+            state = WebSocketState.Closed;
+            return Task.CompletedTask;
+        }
+
+        public override async Task<WebSocketReceiveResult> ReceiveAsync(ArraySegment<byte> buffer, CancellationToken cancellationToken)
+        {
+            ReceiveStarted.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Expected receive to be canceled");
+        }
+
+        public override async Task SendAsync(ArraySegment<byte> buffer, WebSocketMessageType messageType, bool endOfMessage, CancellationToken cancellationToken)
+        {
+            SendStarted.SetResult();
+            await FailSend.Task.WaitAsync(cancellationToken);
+            throw new WebSocketException("Test send failure");
+        }
     }
 
     private sealed class RecordingActionHandler : IOneBotActionHandler

@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using ShiroBot.Plugin.OneBotServer.Protocol;
 using ShiroBot.SDK.Abstractions;
 
@@ -58,7 +59,14 @@ public sealed class OneBotReverseWebSocketClient
     {
         var activeConnection = Volatile.Read(ref connection);
         if (activeConnection is null || !OneBotTransportProtocol.CanReceiveEvents(options.Role)) return;
-        await activeConnection.QueueAsync(JsonSerializer.SerializeToElement(@event), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await activeConnection.QueueAsync(JsonSerializer.SerializeToElement(@event), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ChannelClosedException)
+        {
+            // The connection can close while an event is waiting for queue space.
+        }
     }
 
     public Task PublishLifecycleAsync(string subType = "connect", CancellationToken cancellationToken = default) =>
@@ -79,26 +87,31 @@ public sealed class OneBotReverseWebSocketClient
         if (!string.IsNullOrEmpty(options.AccessToken)) socket.Options.SetRequestHeader("Authorization", "Bearer " + options.AccessToken);
         await socket.ConnectAsync(options.Endpoint, cancellationToken).ConfigureAwait(false);
         BotLog.Info($"[OneBot/ReverseWS] 已连接 {SafeEndpoint()}，role={OneBotTransportProtocol.RoleName(options.Role)}。");
+        await RunConnectedAsync(socket, cancellationToken).ConfigureAwait(false);
+    }
 
+    internal async Task RunConnectedAsync(WebSocket socket, CancellationToken cancellationToken)
+    {
         await using var connection = new OneBotWebSocketConnection(socket, options.Role, options.SocketQueueCapacity, options.MaxWebSocketMessageBytes);
+        using var connectionCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var connectionToken = connectionCancellation.Token;
         Volatile.Write(ref this.connection, connection);
-        using var writerCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var writer = connection.RunWriterAsync(writerCancellation.Token);
+        var writer = RunWriterAsync();
         try
         {
             if (OneBotTransportProtocol.CanReceiveEvents(options.Role))
-                await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), cancellationToken).ConfigureAwait(false);
-            while (connection.IsOpen && !cancellationToken.IsCancellationRequested)
+                await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), connectionToken).ConfigureAwait(false);
+            while (connection.IsOpen && !connectionToken.IsCancellationRequested)
             {
                 JsonElement? frame;
                 try
                 {
-                    frame = await connection.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                    frame = await connection.ReceiveAsync(connectionToken).ConfigureAwait(false);
                 }
                 catch (JsonException)
                 {
                     await connection.QueueAsync(JsonSerializer.SerializeToElement(
-                        OneBotResponse<object?>.Failed(1400, "invalid JSON")), cancellationToken).ConfigureAwait(false);
+                        OneBotResponse<object?>.Failed(1400, "invalid JSON")), connectionToken).ConfigureAwait(false);
                     continue;
                 }
                 if (frame is null)
@@ -107,15 +120,33 @@ public sealed class OneBotReverseWebSocketClient
                     return;
                 }
                 if (!OneBotTransportProtocol.CanReceiveActions(options.Role)) continue;
-                await HandleActionAsync(connection, frame.Value, cancellationToken).ConfigureAwait(false);
+                await HandleActionAsync(connection, frame.Value, connectionToken).ConfigureAwait(false);
             }
         }
         finally
         {
             Interlocked.CompareExchange(ref this.connection, null, connection);
-            writerCancellation.Cancel();
+            connectionCancellation.Cancel();
             try { await writer.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
+        }
+
+        async Task RunWriterAsync()
+        {
+            try
+            {
+                await connection.RunWriterAsync(connectionToken).ConfigureAwait(false);
+            }
+            catch when (!connectionToken.IsCancellationRequested)
+            {
+                socket.Abort();
+                throw;
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref this.connection, null, connection);
+                await connectionCancellation.CancelAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -132,7 +163,11 @@ public sealed class OneBotReverseWebSocketClient
         try
         {
             var request = OneBotTransportProtocol.ParseWebSocketAction(frame);
-            response = (await actions.HandleAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+            response = (await actions.HandleAsync(request, cancellationToken).WaitAsync(cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OneBotActionException exception)
         {
