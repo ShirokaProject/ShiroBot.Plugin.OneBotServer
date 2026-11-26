@@ -345,6 +345,69 @@ public sealed class OneBotTransportIntegrationTests
         }
     }
 
+    [TestMethod]
+    public async Task ReverseWebSocket_TimesOutBlockedActionAndAnswersNextRequest()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var unblock = new ManualResetEventSlim();
+        var actionCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var verified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new DelegateOneBotActionHandler((request, cancellationToken) =>
+        {
+            if (request.Action == "blocked")
+            {
+                using var registration = cancellationToken.Register(() => actionCancelled.TrySetResult());
+                unblock.Wait(timeout.Token);
+            }
+            return Task.FromResult(OneBotResponse<object?>.Ok(null, request.Echo));
+        });
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        await using var app = builder.Build();
+        app.UseWebSockets();
+        app.MapGet("/reverse", async context =>
+        {
+            try
+            {
+                using var socket = await context.WebSockets.AcceptWebSocketAsync();
+                await socket.SendAsync("""{"action":"blocked","echo":"first"}"""u8.ToArray(),
+                    WebSocketMessageType.Text, true, timeout.Token);
+                await socket.SendAsync("""{"action":"get_status","echo":"second"}"""u8.ToArray(),
+                    WebSocketMessageType.Text, true, timeout.Token);
+
+                var buffer = new byte[4096];
+                var result = await socket.ReceiveAsync(buffer, timeout.Token);
+                using var failure = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
+                Assert.AreEqual(1500, failure.RootElement.GetProperty("retcode").GetInt32());
+                Assert.AreEqual("first", failure.RootElement.GetProperty("echo").GetString());
+                StringAssert.Contains(failure.RootElement.GetProperty("message").GetString(), "timed out");
+
+                result = await socket.ReceiveAsync(buffer, timeout.Token);
+                using var success = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
+                Assert.AreEqual(0, success.RootElement.GetProperty("retcode").GetInt32());
+                Assert.AreEqual("second", success.RootElement.GetProperty("echo").GetString());
+                await actionCancelled.Task.WaitAsync(timeout.Token);
+                unblock.Set();
+                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
+                verified.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                unblock.Set();
+                verified.TrySetException(exception);
+            }
+        });
+        await app.StartAsync(timeout.Token);
+        var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+        var endpoint = new Uri(address.Replace("http://", "ws://", StringComparison.Ordinal) + "/reverse");
+        var client = new OneBotReverseWebSocketClient(
+            new OneBotReverseWebSocketOptions(endpoint, "10001", OneBotWebSocketRole.Api),
+            handler, TimeSpan.FromMilliseconds(500));
+
+        await client.RunConnectionAsync(timeout.Token);
+        await verified.Task.WaitAsync(timeout.Token);
+    }
+
     private static HttpClient CreateClient(OneBotKestrelServer server)
     {
         var address = server.Addresses.Single();
