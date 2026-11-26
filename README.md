@@ -47,6 +47,7 @@
 - `bubble` 消息段接受 `file` 或 `url`，以及可选的 `cover` 或 `thumb`。
 - `forward_group_file_to_group` 接受 `group_id`、`file_id`、`target_group_id`、可选 `target_folder_id` 和 `send_message`。目标好友用 `forward_group_file_to_friend` 并传 `user_id`。两个动作均返回 `file_id`。
 - `upload_flash_file` 接受 `paths` 数组和可选 `title`。查询和下载分别用 `get_flash_file_info`、`download_flash_file`，接受 `share_link` 或 `file_set_id`。`reshare_flash_file` 接受 `file_set_id`。下载完成由 `flash_file` 通知回传本地路径。
+- `send_flash_msg` 接受上传返回的 `file_set_id`（兼容 `fileset_id`）以及 `group_id` 或 `user_id`，发送闪传卡片并返回 `message_id`。此操作需要支持闪传卡片的 QQ 适配器。
 
 ## 安装
 

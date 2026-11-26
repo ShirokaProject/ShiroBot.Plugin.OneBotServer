@@ -47,7 +47,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         "rename_group_file_folder", "move_group_file", "rename_group_file", "delete_group_file",
         "set_group_file_forever", "get_group_file_system_info", "download_file", "get_file",
         "forward_group_file_to_group", "forward_group_file_to_friend", "get_flash_file_info", "download_flash_file",
-        "upload_flash_file", "reshare_flash_file",
+        "upload_flash_file", "reshare_flash_file", "send_flash_msg",
     ];
 
     private static readonly string[] UnsupportedExtendedActions =
@@ -307,6 +307,9 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 return await Void(context.DownloadFlashFilesAsync(FirstString(p, ["share_link", "file_set_id"]), cancellationToken));
             case "reshare_flash_file":
                 return FlashShareInfo(await context.ReshareFlashFilesAsync(OneBotParameters.String(p, "file_set_id"), cancellationToken));
+            case "send_flash_msg":
+                return await SendAsync(Target(p),
+                    [new RawSegment("qq", "flash_file", FirstString(p, ["fileset_id", "file_set_id"]))], cancellationToken);
             case "upload_group_file": return new { file_id = await context.UploadGroupFileAsync(Id(p, "group_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), FirstString(p, ["folder", "folder_id", "parent_folder_id"], "/"), cancellationToken) };
             case "upload_private_file": return new { file_id = await context.UploadPrivateFileAsync(Id(p, "user_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), cancellationToken) };
             case "get_group_root_files": return await context.GetGroupFilesAsync(Id(p, "group_id"), "/");

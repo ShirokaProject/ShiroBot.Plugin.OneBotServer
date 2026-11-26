@@ -19,7 +19,7 @@ public sealed class OneBotActionDispatcherTests
         var dispatcher = new OneBotActionDispatcher(new RecordingFacade());
 
         Assert.HasCount(38, dispatcher.StandardActionNames);
-        Assert.HasCount(127, dispatcher.Actions);
+        Assert.HasCount(128, dispatcher.Actions);
         CollectionAssert.Contains(dispatcher.StandardActionNames.ToArray(), "send_like");
         CollectionAssert.DoesNotContain(dispatcher.StandardActionNames.ToArray(), "set_group_portrait");
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "set_group_portrait");
@@ -86,6 +86,15 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual("test-set", facade.DownloadedSet);
         var reshare = await dispatcher.DispatchAsync(Request("reshare_flash_file", """{"file_set_id":"test-set"}"""));
         Assert.AreEqual("new-set", JsonSerializer.SerializeToElement(reshare.Data).GetProperty("file_set_id").GetString());
+
+        var invalidSend = await dispatcher.DispatchAsync(Request("send_flash_msg", """{"fileset_id":"test-set"}"""));
+        Assert.AreEqual(1400, invalidSend.RetCode);
+        var groupSend = await dispatcher.DispatchAsync(Request("send_flash_msg", """{"fileset_id":"test-set","group_id":2}"""));
+        Assert.AreEqual("42", JsonSerializer.SerializeToElement(groupSend.Data).GetProperty("message_id").GetString());
+        Assert.AreEqual((Channel.Group("2"), new RawSegment("qq", "flash_file", "test-set")), facade.FlashSend);
+        var privateSend = await dispatcher.DispatchAsync(Request("send_flash_msg", """{"file_set_id":"test-set","user_id":3}"""));
+        Assert.AreEqual(0, privateSend.RetCode);
+        Assert.AreEqual((Channel.Direct("3"), new RawSegment("qq", "flash_file", "test-set")), facade.FlashSend);
     }
 
     private sealed class NewModelFacade : OneBotContextFacadeBase
@@ -95,6 +104,13 @@ public sealed class OneBotActionDispatcherTests
         public (long, string, long, bool) FriendCopy { get; private set; }
         public IReadOnlyList<string> UploadPaths { get; private set; } = [];
         public string? DownloadedSet { get; private set; }
+        public (Channel, RawSegment) FlashSend { get; private set; }
+
+        public override Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken token)
+        {
+            FlashSend = (channel, (RawSegment)message.Single());
+            return Task.FromResult("42");
+        }
 
         public override Task<IReadOnlyList<QOnlineClient>> GetOnlineClientsAsync(bool noCache, CancellationToken token)
         {
