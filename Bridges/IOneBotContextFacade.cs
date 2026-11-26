@@ -9,10 +9,10 @@ namespace ShiroBot.Plugin.OneBotServer.Bridges;
 public interface IOneBotContextFacade
 {
     string StorageDirectory { get; }
-    Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message);
+    Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken cancellationToken = default);
     Task DeleteAsync(string messageId, Channel? channel = null);
     Task<object?> GetAsync(string messageId, Channel? channel = null);
-    Task<object?> GetForwardedAsync(string forwardId);
+    Task<object?> GetForwardedAsync(string forwardId, CancellationToken cancellationToken = default);
     Task<object?> GetHistoryAsync(Channel channel, string? beforeMessageId, int limit);
     Task MarkAsReadAsync(string messageId, Channel? channel = null);
     Task<object?> GetLoginInfoAsync();
@@ -51,8 +51,8 @@ public interface IOneBotContextFacade
     Task DeleteAnnouncementAsync(long groupId, string noticeId);
     Task<object?> GetEssenceMessagesAsync(long groupId, int pageIndex, int pageSize);
     Task SetEssenceMessageAsync(long groupId, long messageId, bool enabled);
-    Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId);
-    Task<string> UploadPrivateFileAsync(long userId, string file, string name);
+    Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId, CancellationToken cancellationToken = default);
+    Task<string> UploadPrivateFileAsync(long userId, string file, string name, CancellationToken cancellationToken = default);
     Task<object?> GetGroupFilesAsync(long groupId, string folderId);
     Task<string> GetGroupFileUrlAsync(long groupId, string fileId);
     Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend);
@@ -74,9 +74,9 @@ public interface IOneBotContextFacade
     Task<IReadOnlyList<QGroupMember>> GetGroupMemberEntitiesAsync(long groupId, bool noCache);
     Task<string> GetUserNicknameAsync(long userId);
     Task<string> GetGroupNameAsync(long groupId);
-    Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt);
-    Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination);
-    Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source);
+    Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt, CancellationToken cancellationToken = default);
+    Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination, CancellationToken cancellationToken = default);
+    Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId);
 }
 

@@ -17,7 +17,7 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
     private IQMessageApi Message => context.GetAdapterExtension<IQMessageApi>() ?? throw Unsupported();
     public string StorageDirectory => Path.Combine(context.PluginDirectory, "storage");
 
-    public async Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message)
+    public async Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken cancellationToken = default)
     {
         SentMessage sent;
         if (message.Any(segment => segment is MarkdownSegment or CardSegment))
@@ -27,11 +27,11 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
                 Segments = message,
                 AllowedFallbacks = MessageFallbackOptions.MarkdownAsText |
                     MessageFallbackOptions.CardAsMarkdown | MessageFallbackOptions.CardAsText
-            }).ConfigureAwait(false);
+            }, cancellationToken).ConfigureAwait(false);
         }
         else
         {
-            sent = await context.Message.SendMessageAsync(channel, message).ConfigureAwait(false);
+            sent = await context.Message.SendMessageAsync(channel, message, cancellationToken).ConfigureAwait(false);
         }
 
         if (!sent.IsSuccess)
@@ -52,9 +52,9 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
         return message is null ? null : MessageInfo(message);
     }
 
-    public async Task<object?> GetForwardedAsync(string forwardId) => new
+    public async Task<object?> GetForwardedAsync(string forwardId, CancellationToken cancellationToken = default) => new
     {
-        messages = (await Message.GetForwardedMessagesAsync(forwardId)).Select(message => new
+        messages = (await Message.GetForwardedMessagesAsync(forwardId, cancellationToken)).Select(message => new
         {
             content = MessageSegments.FromQq(message.Segments),
             sender = new { nickname = message.SenderName ?? string.Empty, user_id = (long?)null },
@@ -223,8 +223,8 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
             message_id = message.MessageId,
         }).ToArray();
     public Task SetEssenceMessageAsync(long groupId, long messageId, bool enabled) => Group.SetEssenceMessageAsync(groupId.ToString(CultureInfo.InvariantCulture), messageId.ToString(CultureInfo.InvariantCulture), enabled);
-    public Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId) => File.UploadGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), file, name, folderId);
-    public Task<string> UploadPrivateFileAsync(long userId, string file, string name) => File.UploadPrivateFileAsync(userId.ToString(CultureInfo.InvariantCulture), file, name);
+    public Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId, CancellationToken cancellationToken = default) => File.UploadGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), file, name, folderId, cancellationToken);
+    public Task<string> UploadPrivateFileAsync(long userId, string file, string name, CancellationToken cancellationToken = default) => File.UploadPrivateFileAsync(userId.ToString(CultureInfo.InvariantCulture), file, name, cancellationToken);
     public async Task<object?> GetGroupFilesAsync(long groupId, string folderId)
     {
         var (files, folders) = await File.GetGroupFilesAsync(groupId.ToString(CultureInfo.InvariantCulture), folderId);
@@ -275,26 +275,26 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
     public async Task<string> GetUserNicknameAsync(long userId) => (await System.GetUserProfileAsync(userId.ToString(CultureInfo.InvariantCulture))).Nickname ?? string.Empty;
     public async Task<string> GetGroupNameAsync(long groupId) => (await Group.GetGroupInfoAsync(groupId.ToString(CultureInfo.InvariantCulture))).GroupName ?? string.Empty;
 
-    public async Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt)
+    public async Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt, CancellationToken cancellationToken = default)
     {
         var forwarded = nodes.Select(node => new QForwardedMessage(node.UserId.ToString(CultureInfo.InvariantCulture), node.SenderName, MessageSegments.ToQq(node.Content))
         {
             Time = node.Time,
         }).ToArray();
         var segment = new QOutgoingForward(forwarded) { Title = title, Preview = preview, Summary = summary, Prompt = prompt };
-        return (await Message.SendMessageAsync(ToScene(channel), channel.Id, [segment])).ToString();
+        return (await Message.SendMessageAsync(ToScene(channel), channel.Id, [segment], cancellationToken)).ToString();
     }
 
-    public async Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination)
+    public async Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination, CancellationToken cancellationToken = default)
     {
-        var message = await Message.GetMessageAsync(ToScene(source.Scene), source.PeerId.ToString(CultureInfo.InvariantCulture), source.Sequence.ToString(CultureInfo.InvariantCulture))
+        var message = await Message.GetMessageAsync(ToScene(source.Scene), source.PeerId.ToString(CultureInfo.InvariantCulture), source.Sequence.ToString(CultureInfo.InvariantCulture), cancellationToken)
             ?? throw new InvalidOperationException("The source message no longer exists.");
-        return (await Message.SendMessageAsync(ToScene(destination), destination.Id, ToOutgoing(message.Segments))).ToString();
+        return (await Message.SendMessageAsync(ToScene(destination), destination.Id, ToOutgoing(message.Segments), cancellationToken)).ToString();
     }
 
-    public async Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source)
+    public async Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source, CancellationToken cancellationToken = default)
     {
-        var message = await Message.GetMessageAsync(ToScene(source.Scene), source.PeerId.ToString(CultureInfo.InvariantCulture), source.Sequence.ToString(CultureInfo.InvariantCulture))
+        var message = await Message.GetMessageAsync(ToScene(source.Scene), source.PeerId.ToString(CultureInfo.InvariantCulture), source.Sequence.ToString(CultureInfo.InvariantCulture), cancellationToken)
             ?? throw new InvalidOperationException("The source message no longer exists.");
         var senderName = message switch
         {

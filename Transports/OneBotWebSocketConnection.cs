@@ -35,6 +35,19 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
     public ValueTask QueueAsync(JsonElement payload, CancellationToken cancellationToken) =>
         outbound.Writer.WriteAsync(payload.Clone(), cancellationToken);
 
+    // Bound completed responses waiting on a slow peer, independently of the action execution slots.
+    internal static async Task TrackActionAsync(HashSet<Task> pending, Task action)
+    {
+        pending.Add(action);
+        if (pending.Count >= 32)
+            await Task.WhenAny(pending).ConfigureAwait(false);
+        foreach (var completed in pending.Where(task => task.IsCompleted).ToArray())
+        {
+            pending.Remove(completed);
+            await completed.ConfigureAwait(false);
+        }
+    }
+
     public async Task RunWriterAsync(CancellationToken cancellationToken)
     {
         try
@@ -42,7 +55,9 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
             await foreach (var payload in outbound.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
                 var bytes = JsonSerializer.SerializeToUtf8Bytes(payload);
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken).ConfigureAwait(false);
+                using var writeDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                writeDeadline.CancelAfter(TimeSpan.FromSeconds(15));
+                await socket.SendAsync(bytes, WebSocketMessageType.Text, true, writeDeadline.Token).ConfigureAwait(false);
             }
         }
         finally

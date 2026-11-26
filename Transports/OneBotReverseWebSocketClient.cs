@@ -11,22 +11,24 @@ namespace ShiroBot.Plugin.OneBotServer.Transports;
 public sealed class OneBotReverseWebSocketClient
 {
     private readonly OneBotReverseWebSocketOptions options;
-    private readonly IOneBotActionHandler actions;
+    private readonly OneBotActionExecutor actionExecutor;
     private readonly TimeSpan reconnectDelay;
-    private readonly TimeSpan actionTimeout;
-    private readonly SemaphoreSlim actionSlots = new(4, 4);
     private OneBotWebSocketConnection? connection;
 
     public OneBotReverseWebSocketClient(OneBotReverseWebSocketOptions options, IOneBotActionHandler actions)
-        : this(options, actions, TimeSpan.FromSeconds(45))
+        : this(options, new OneBotActionExecutor(actions ?? throw new ArgumentNullException(nameof(actions))))
     {
     }
 
-    internal OneBotReverseWebSocketClient(OneBotReverseWebSocketOptions options, IOneBotActionHandler actions, TimeSpan actionTimeout)
+    internal OneBotReverseWebSocketClient(OneBotReverseWebSocketOptions options, IOneBotActionHandler actions, TimeSpan actionTimeout, TimeSpan? mediaTimeout = null)
+        : this(options, new OneBotActionExecutor(actions ?? throw new ArgumentNullException(nameof(actions)), actionTimeout, mediaTimeout ?? actionTimeout))
+    {
+    }
+
+    internal OneBotReverseWebSocketClient(OneBotReverseWebSocketOptions options, OneBotActionExecutor actionExecutor)
     {
         this.options = options ?? throw new ArgumentNullException(nameof(options));
-        this.actions = actions ?? throw new ArgumentNullException(nameof(actions));
-        this.actionTimeout = actionTimeout;
+        this.actionExecutor = actionExecutor;
         if (string.IsNullOrWhiteSpace(options.SelfId)) throw new ArgumentException("Self ID is required", nameof(options));
         if (options.SocketQueueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(options));
         if (options.MaxWebSocketMessageBytes < 0) throw new ArgumentOutOfRangeException(nameof(options));
@@ -105,6 +107,7 @@ public sealed class OneBotReverseWebSocketClient
         var connectionToken = connectionCancellation.Token;
         Volatile.Write(ref this.connection, connection);
         var writer = RunWriterAsync();
+        var pending = new HashSet<Task>();
         try
         {
             if (OneBotTransportProtocol.CanReceiveEvents(options.Role))
@@ -128,13 +131,14 @@ public sealed class OneBotReverseWebSocketClient
                     return;
                 }
                 if (!OneBotTransportProtocol.CanReceiveActions(options.Role)) continue;
-                await HandleActionAsync(connection, frame.Value, connectionToken).ConfigureAwait(false);
+                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleActionAsync(connection, frame.Value, connectionToken)).ConfigureAwait(false);
             }
         }
         finally
         {
             Interlocked.CompareExchange(ref this.connection, null, connection);
             connectionCancellation.Cancel();
+            await Task.WhenAll(pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             try { await writer.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
         }
@@ -172,7 +176,7 @@ public sealed class OneBotReverseWebSocketClient
         try
         {
             var request = OneBotTransportProtocol.ParseWebSocketAction(frame);
-            response = (await ExecuteActionAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+            response = (await actionExecutor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -197,52 +201,6 @@ public sealed class OneBotReverseWebSocketClient
             BotLog.Log($"[OneBot/ReverseWS] {SafeEndpoint()} 调用 {SafeAction(action)} 完成，retcode={response.RetCode}，耗时 {stopwatch.ElapsedMilliseconds}ms。");
         else
             BotLog.Warning($"[OneBot/ReverseWS] {SafeEndpoint()} 调用 {SafeAction(action)} 失败，retcode={response.RetCode}，耗时 {stopwatch.ElapsedMilliseconds}ms，原因: {response.Message ?? "unknown"}。");
-    }
-
-    private async Task<OneBotResponse<object?>> ExecuteActionAsync(OneBotActionRequest request, CancellationToken connectionToken)
-    {
-        connectionToken.ThrowIfCancellationRequested();
-        if (!actionSlots.Wait(0))
-            return OneBotResponse<object?>.Failed(1500, "too many actions are still running");
-
-        var actionCancellation = CancellationTokenSource.CreateLinkedTokenSource(connectionToken);
-        // Offload the call itself so a handler that blocks before returning a Task can still time out.
-        var execution = Task.Run(() =>
-        {
-            actionCancellation.Token.ThrowIfCancellationRequested();
-            return actions.HandleAsync(request, actionCancellation.Token);
-        });
-        try
-        {
-            return await execution.WaitAsync(actionTimeout, connectionToken).ConfigureAwait(false);
-        }
-        catch (TimeoutException) when (!execution.IsCompleted)
-        {
-            return OneBotResponse<object?>.Failed(1500, $"action timed out after {actionTimeout.TotalSeconds:0.###} seconds");
-        }
-        finally
-        {
-            _ = ReleaseActionSlotAsync(execution, actionCancellation);
-        }
-    }
-
-    private async Task ReleaseActionSlotAsync(Task execution, CancellationTokenSource actionCancellation)
-    {
-        try
-        {
-            if (!execution.IsCompleted) await actionCancellation.CancelAsync().ConfigureAwait(false);
-        }
-        catch (AggregateException exception)
-        {
-            BotLog.Error($"[OneBot/ReverseWS] {SafeEndpoint()} 取消 Action 失败: {exception}");
-        }
-        finally
-        {
-            // Keep the slot occupied until an uncooperative handler actually exits.
-            await execution.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
-            actionCancellation.Dispose();
-            actionSlots.Release();
-        }
     }
 
     private object LifecycleEvent(string subType) => new

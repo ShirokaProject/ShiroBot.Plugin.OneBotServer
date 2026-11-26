@@ -346,7 +346,7 @@ public sealed class OneBotTransportIntegrationTests
     }
 
     [TestMethod]
-    public async Task ReverseWebSocket_TimesOutBlockedActionAndAnswersNextRequest()
+    public async Task ReverseWebSocket_AnswersImageSendBeforeBlockedForwardTimesOut()
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         using var unblock = new ManualResetEventSlim();
@@ -354,7 +354,7 @@ public sealed class OneBotTransportIntegrationTests
         var verified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var handler = new DelegateOneBotActionHandler((request, cancellationToken) =>
         {
-            if (request.Action == "blocked")
+            if (request.Action == "send_group_forward_msg")
             {
                 using var registration = cancellationToken.Register(() => actionCancelled.TrySetResult());
                 unblock.Wait(timeout.Token);
@@ -370,22 +370,22 @@ public sealed class OneBotTransportIntegrationTests
             try
             {
                 using var socket = await context.WebSockets.AcceptWebSocketAsync();
-                await socket.SendAsync("""{"action":"blocked","echo":"first"}"""u8.ToArray(),
+                await socket.SendAsync("""{"action":"send_group_forward_msg","echo":"forward"}"""u8.ToArray(),
                     WebSocketMessageType.Text, true, timeout.Token);
-                await socket.SendAsync("""{"action":"get_status","echo":"second"}"""u8.ToArray(),
+                await socket.SendAsync("""{"action":"send_group_msg","params":{"group_id":42,"message":[{"type":"image","data":{"file":"test.png"}}]},"echo":"image"}"""u8.ToArray(),
                     WebSocketMessageType.Text, true, timeout.Token);
 
                 var buffer = new byte[4096];
                 var result = await socket.ReceiveAsync(buffer, timeout.Token);
-                using var failure = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
-                Assert.AreEqual(1500, failure.RootElement.GetProperty("retcode").GetInt32());
-                Assert.AreEqual("first", failure.RootElement.GetProperty("echo").GetString());
-                StringAssert.Contains(failure.RootElement.GetProperty("message").GetString(), "timed out");
-
-                result = await socket.ReceiveAsync(buffer, timeout.Token);
                 using var success = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
                 Assert.AreEqual(0, success.RootElement.GetProperty("retcode").GetInt32());
-                Assert.AreEqual("second", success.RootElement.GetProperty("echo").GetString());
+                Assert.AreEqual("image", success.RootElement.GetProperty("echo").GetString());
+                result = await socket.ReceiveAsync(buffer, timeout.Token);
+                using var failure = JsonDocument.Parse(buffer.AsMemory(0, result.Count));
+                Assert.AreEqual(1500, failure.RootElement.GetProperty("retcode").GetInt32());
+                Assert.AreEqual("forward", failure.RootElement.GetProperty("echo").GetString());
+                StringAssert.Contains(failure.RootElement.GetProperty("message").GetString(), "timed out");
+
                 await actionCancelled.Task.WaitAsync(timeout.Token);
                 unblock.Set();
                 await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
@@ -406,6 +406,77 @@ public sealed class OneBotTransportIntegrationTests
 
         await client.RunConnectionAsync(timeout.Token);
         await verified.Task.WaitAsync(timeout.Token);
+    }
+
+    [TestMethod]
+    public async Task MediaActionTimeoutReleasesSlotsWithoutDelayingQueries()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var entered = 0;
+        var allEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new DelegateOneBotActionHandler(async (request, token) =>
+        {
+            if (request.Action == "send_group_msg")
+            {
+                if (Interlocked.Increment(ref entered) == 4) allEntered.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            }
+            return OneBotResponse<object?>.Ok(null, request.Echo);
+        });
+        var executor = new OneBotActionExecutor(handler, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+        var media = new OneBotActionRequest("send_group_msg", new Dictionary<string, JsonElement>(), null);
+        var query = media with { Action = "get_status" };
+        var running = Enumerable.Range(0, 4).Select(_ => executor.ExecuteAsync(media, timeout.Token)).ToArray();
+        await allEntered.Task.WaitAsync(timeout.Token);
+
+        Assert.AreEqual(0, (await executor.ExecuteAsync(query, timeout.Token)).RetCode);
+        Assert.IsTrue(running.All(task => !task.IsCompleted));
+        StringAssert.Contains((await executor.ExecuteAsync(media, timeout.Token)).Message, "still running");
+        foreach (var result in await Task.WhenAll(running).WaitAsync(timeout.Token))
+            StringAssert.Contains(result.Message, "timed out");
+
+        var subsequent = media with { Action = "send_group_forward_msg" };
+        OneBotResponse<object?> response;
+        do
+        {
+            response = await executor.ExecuteAsync(subsequent, timeout.Token);
+            if (response.RetCode != 0) await Task.Delay(10, timeout.Token);
+        } while (response.RetCode != 0);
+    }
+
+    [TestMethod]
+    public async Task MergedForwards_LeaveAMediaSlotForAnIndependentImage()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var forwarding = 0;
+        var handler = new DelegateOneBotActionHandler(async (request, token) =>
+        {
+            if (request.Action == "send_group_forward_msg")
+            {
+                if (Interlocked.Increment(ref forwarding) == 3) started.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }
+            return OneBotResponse<object?>.Ok(null, request.Echo);
+        });
+        var executor = new OneBotActionExecutor(handler);
+        var forward = new OneBotActionRequest("send_group_forward_msg", new Dictionary<string, JsonElement>(), null);
+        var image = forward with { Action = "send_group_msg" };
+        var running = Enumerable.Range(0, 3).Select(_ => executor.ExecuteAsync(forward, timeout.Token)).ToArray();
+        try
+        {
+            await started.Task.WaitAsync(timeout.Token);
+            StringAssert.Contains((await executor.ExecuteAsync(forward, timeout.Token)).Message, "merged forwards");
+            Assert.AreEqual(0, (await executor.ExecuteAsync(image, timeout.Token)).RetCode);
+            Assert.IsTrue(running.All(task => !task.IsCompleted));
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Task.WhenAll(running);
+        }
+        Assert.AreEqual(0, (await executor.ExecuteAsync(forward, timeout.Token)).RetCode);
     }
 
     private static HttpClient CreateClient(OneBotKestrelServer server)

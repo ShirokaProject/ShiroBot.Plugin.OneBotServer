@@ -51,6 +51,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
             _state = new OneBotRuntimeState(messages, config.Storage.RegistryMaxEntries, config.Limits.EventQueueCapacity,
                 OneBotRuntimeState.DeriveRequestFlagKey(config.Storage.RequestFlagSecret, config.AccessToken));
             _actions = new OneBotActionDispatcher(context, _state);
+            var actionExecutor = new OneBotActionExecutor(_actions);
 
             if (config.Http.Enabled || config.ForwardWebSocket.Enabled)
             {
@@ -61,7 +62,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                          config.ForwardWebSocket.Enabled, config.ForwardWebSocket.Path,
                          MaxRequestBodyBytes: 0, config.Limits.MaxWebSocketConnections,
                          MaxWebSocketMessageBytes: 0),
-                     _actions, runtimeToken).ConfigureAwait(false);
+                     _actions, actionExecutor, runtimeToken).ConfigureAwait(false);
             }
 
             if (config.ReverseWebSocket.Enabled)
@@ -73,7 +74,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
                         new OneBotReverseWebSocketOptions(endpoint, selfId, role, config.AccessToken,
                             TimeSpan.FromSeconds(config.ReverseWebSocket.ReconnectDelaySeconds),
                             config.Limits.EventQueueCapacity, MaxWebSocketMessageBytes: 0),
-                        _actions);
+                        actionExecutor);
                     _reverseWebSockets.Add(client);
                     _reverseWebSocketTasks.Add(client.RunAsync(runtimeToken));
                 }

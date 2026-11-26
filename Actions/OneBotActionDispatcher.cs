@@ -37,7 +37,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         "get_group_ignore_add_request", "get_doubt_friends_add_request", "set_doubt_friends_add_request",
         "batch_delete_group_member", "get_group_shut_list", "send_group_forward_msg", "send_private_forward_msg",
         "send_forward_msg", "forward_friend_single_msg", "forward_group_single_msg", "get_event",
-        "set_msg_emoji_like", "unset_msg_emoji_like", "fetch_emoji_like",
+        "set_group_reaction", "set_msg_emoji_like", "unset_msg_emoji_like", "fetch_emoji_like",
     ];
 
     private static readonly string[] FileActions =
@@ -63,6 +63,8 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         StandardActions.Concat([".handle_quick_operation"]).Concat(ExtensionActions).Concat(FileActions)
             .Concat(["get_guild_list"]).Concat(UnsupportedExtendedActions), StringComparer.Ordinal);
     private readonly object _rateLimitLock = new();
+    private readonly SemaphoreSlim _backgroundSlots = new(4, 4);
+    private readonly SemaphoreSlim _rateLimitedQueueSlots = new(32, 32);
     private readonly object _credentialLock = new();
     private readonly Dictionary<string, CachedCredential<string>> _cookieCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly TimeSpan _rateLimit;
@@ -93,14 +95,21 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
 
         if (normalized.Async || normalized.RateLimited)
         {
-            var operation = () => InvokeAsync(normalized.Action, request.Params, CancellationToken.None);
-            _ = normalized.RateLimited ? EnqueueRateLimited(operation) : RunBackground(operation);
+            var slots = normalized.RateLimited ? _rateLimitedQueueSlots : _backgroundSlots;
+            if (!slots.Wait(0))
+                return OneBotResponse<object?>.Failed(1500, "too many background actions", request.Echo);
+            var operation = (CancellationToken token) => InvokeAsync(normalized.Action, request.Params, token);
+            _ = normalized.RateLimited ? EnqueueRateLimited(operation) : Task.Run(() => RunBackground(operation, slots));
             return new OneBotResponse<object?>("async", 1, null, Echo: request.Echo);
         }
 
         try
         {
             return OneBotResponse<object?>.Ok(await InvokeAsync(normalized.Action, request.Params, cancellationToken), request.Echo);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OneBotParameterException exception)
         {
@@ -135,16 +144,18 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         if (response.RetCode != 0) throw new OneBotActionException(400, response.RetCode, response.Message ?? "Quick operation failed");
     }
 
-    private static async Task RunBackground(Func<Task<object?>> operation)
+    private static async Task RunBackground(Func<CancellationToken, Task<object?>> operation, SemaphoreSlim slots)
     {
-        try { await operation(); }
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        try { await operation(timeout.Token).ConfigureAwait(false); }
         catch (Exception exception)
         {
             BotLog.Error($"[OneBot] 异步 Action 执行异常 ({exception.GetType().Name}): {exception}");
         }
+        finally { slots.Release(); }
     }
 
-    private Task EnqueueRateLimited(Func<Task<object?>> operation)
+    private Task EnqueueRateLimited(Func<CancellationToken, Task<object?>> operation)
     {
         lock (_rateLimitLock)
         {
@@ -152,11 +163,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             {
                 var wait = _rateLimit - (DateTimeOffset.UtcNow - _lastRateLimitedAt);
                 if (wait > TimeSpan.Zero) await Task.Delay(wait);
-                try { await operation(); }
-                catch (Exception exception)
-                {
-                    BotLog.Error($"[OneBot] 限速 Action 执行异常 ({exception.GetType().Name}): {exception}");
-                }
+                try { await RunBackground(operation, _rateLimitedQueueSlots).ConfigureAwait(false); }
                 finally { _lastRateLimitedAt = DateTimeOffset.UtcNow; }
             }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default).Unwrap();
             return _rateLimitedTail;
@@ -168,15 +175,15 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         cancellationToken.ThrowIfCancellationRequested();
         switch (action)
         {
-            case "send_private_msg": return await SendAsync(Channel.Direct(Id(p, "user_id").ToString()), Message(p));
-            case "send_group_msg": return await SendAsync(Channel.Group(Id(p, "group_id").ToString()), Message(p));
-            case "send_msg": return await SendAsync(Target(p), Message(p));
+            case "send_private_msg": return await SendAsync(Channel.Direct(Id(p, "user_id").ToString()), Message(p), cancellationToken);
+            case "send_group_msg": return await SendAsync(Channel.Group(Id(p, "group_id").ToString()), Message(p), cancellationToken);
+            case "send_msg": return await SendAsync(Target(p), Message(p), cancellationToken);
             case "delete_msg": var delete = OneBotMessageReference(p); return await Void(context.DeleteAsync(delete.Sequence.ToString(), ToChannel(delete)));
             case "get_msg":
                 var getMessageId = Id(p, "message_id");
                 var get = OneBotMessageReference(p);
                 return RewriteMessageId(await context.GetAsync(get.Sequence.ToString(), ToChannel(get)), getMessageId);
-            case "get_forward_msg": return await context.GetForwardedAsync(FirstString(p, ["id", "forward_id", "message_id"]));
+            case "get_forward_msg": return await context.GetForwardedAsync(FirstString(p, ["id", "forward_id", "message_id"]), cancellationToken);
             case "send_like": return await Void(context.SendLikeAsync(Id(p, "user_id"), NonNegativeInt(p, "times", 1)));
             case "get_login_info": return await context.GetLoginInfoAsync();
             case "get_stranger_info": return await context.GetStrangerAsync(Id(p, "user_id"), Bool(p, "no_cache"));
@@ -210,7 +217,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "clean_cache": return await Void(context.CleanCacheAsync());
             case "set_restart": throw new NotSupportedException("The host SDK does not expose a restart capability.");
             case "get_event": return await GetEventsAsync(p, cancellationToken);
-            case ".handle_quick_operation": return await HandleQuickOperationAsync(p);
+            case ".handle_quick_operation": return await HandleQuickOperationAsync(p, cancellationToken);
             case "get_guild_list": return null;
             case "set_group_name": return await Void(context.SetGroupNameAsync(Id(p, "group_id"), OneBotParameters.String(p, "group_name")));
             case "set_group_portrait": return await Void(context.SetGroupPortraitAsync(Id(p, "group_id"), OneBotParameters.String(p, "file")));
@@ -246,6 +253,12 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 return await RewriteMessageCollectionAsync(await context.GetEssenceMessagesAsync(essenceGroupId, 0, int.MaxValue), Channel.Group(essenceGroupId.ToString()));
             case "set_essence_msg": var essence = GroupOneBotMessageReference(p); return await Void(context.SetEssenceMessageAsync(essence.PeerId, essence.Sequence, true));
             case "delete_essence_msg": var unessence = GroupOneBotMessageReference(p); return await Void(context.SetEssenceMessageAsync(unessence.PeerId, unessence.Sequence, false));
+            case "set_group_reaction":
+                var groupReaction = GroupOneBotMessageReference(p);
+                if (Id(p, "group_id") != groupReaction.PeerId)
+                    throw new OneBotParameterException("group_id does not match the group for message_id");
+                return await Void(context.SetReactionAsync(groupReaction.PeerId, groupReaction.Sequence,
+                    OneBotParameters.String(p, "code"), Bool(p, "is_add", true)));
             case "set_msg_emoji_like": var reaction = GroupOneBotMessageReference(p); return await Void(context.SetReactionAsync(reaction.PeerId, reaction.Sequence, OneBotParameters.String(p, "emoji_id"), Bool(p, "set", true)));
             case "unset_msg_emoji_like": var unreaction = GroupOneBotMessageReference(p); return await Void(context.SetReactionAsync(unreaction.PeerId, unreaction.Sequence, OneBotParameters.String(p, "emoji_id"), false));
             case "fetch_emoji_like": return await FetchEmojiLikesAsync(p);
@@ -260,13 +273,13 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "set_doubt_friends_add_request": return await SetDoubtFriendRequestAsync(p);
             case "batch_delete_group_member": return await BatchDeleteGroupMembersAsync(p);
             case "get_group_shut_list": return (await context.GetGroupMemberEntitiesAsync(Id(p, "group_id"), Bool(p, "no_cache"))).Where(member => member.ShutUpEndTime > DateTimeOffset.UtcNow).Select(MemberInfo).ToArray();
-            case "send_group_forward_msg": return await SendForwardAsync(p, Channel.Group(Id(p, "group_id").ToString()));
-            case "send_private_forward_msg": return await SendForwardAsync(p, Channel.Direct(Id(p, "user_id").ToString()));
-            case "send_forward_msg": return await SendForwardAsync(p, Target(p));
-            case "forward_friend_single_msg": return await ForwardSingleAsync(p, Channel.Direct(Id(p, "user_id").ToString()));
-            case "forward_group_single_msg": return await ForwardSingleAsync(p, Channel.Group(Id(p, "group_id").ToString()));
-            case "upload_group_file": return new { file_id = await context.UploadGroupFileAsync(Id(p, "group_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), FirstString(p, ["folder", "folder_id", "parent_folder_id"], "/")) };
-            case "upload_private_file": return new { file_id = await context.UploadPrivateFileAsync(Id(p, "user_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file")) };
+            case "send_group_forward_msg": return await SendForwardAsync(p, Channel.Group(Id(p, "group_id").ToString()), cancellationToken);
+            case "send_private_forward_msg": return await SendForwardAsync(p, Channel.Direct(Id(p, "user_id").ToString()), cancellationToken);
+            case "send_forward_msg": return await SendForwardAsync(p, Target(p), cancellationToken);
+            case "forward_friend_single_msg": return await ForwardSingleAsync(p, Channel.Direct(Id(p, "user_id").ToString()), cancellationToken);
+            case "forward_group_single_msg": return await ForwardSingleAsync(p, Channel.Group(Id(p, "group_id").ToString()), cancellationToken);
+            case "upload_group_file": return new { file_id = await context.UploadGroupFileAsync(Id(p, "group_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), FirstString(p, ["folder", "folder_id", "parent_folder_id"], "/"), cancellationToken) };
+            case "upload_private_file": return new { file_id = await context.UploadPrivateFileAsync(Id(p, "user_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), cancellationToken) };
             case "get_group_root_files": return await context.GetGroupFilesAsync(Id(p, "group_id"), "/");
             case "get_group_files_by_folder": return await context.GetGroupFilesAsync(Id(p, "group_id"), FirstString(p, ["folder_id", "parent_folder_id"]));
             case "get_group_file_url": return await GetGroupFileUrlAsync(p);
@@ -424,7 +437,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return null;
     }
 
-    private async Task<object?> SendForwardAsync(IReadOnlyDictionary<string, JsonElement> p, Channel channel)
+    private async Task<object?> SendForwardAsync(IReadOnlyDictionary<string, JsonElement> p, Channel channel, CancellationToken cancellationToken)
     {
         var nodesElement = p.TryGetValue("messages", out var messages) ? messages : p.TryGetValue("message", out var message) ? message : default;
         if (nodesElement.ValueKind != JsonValueKind.Array || nodesElement.GetArrayLength() == 0)
@@ -438,7 +451,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             if (data.TryGetProperty("id", out var id))
             {
                 var source = OneBotMessageReference(new Dictionary<string, JsonElement> { ["message_id"] = id.Clone() });
-                nodes.Add(await context.GetForwardNodeAsync(source));
+                nodes.Add(await context.GetForwardNodeAsync(source, cancellationToken));
                 continue;
             }
             var userId = PropertyId(data, "user_id", "uin");
@@ -448,13 +461,13 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 data.TryGetProperty("time", out var time) && time.TryGetInt64(out var seconds) ? DateTimeOffset.FromUnixTimeSeconds(seconds) : null));
         }
         var preview = p.TryGetValue("news", out var news) ? ParseForwardPreview(news) : null;
-        var nativeId = await context.SendForwardAsync(channel, nodes, OptionalString(p, "source"), preview, OptionalString(p, "summary"), OptionalString(p, "prompt"));
+        var nativeId = await context.SendForwardAsync(channel, nodes, OptionalString(p, "source"), preview, OptionalString(p, "summary"), OptionalString(p, "prompt"), cancellationToken);
         return new { message_id = await RegisterMessageAsync(channel, nativeId), forward_id = string.Empty };
     }
 
-    private async Task<object?> ForwardSingleAsync(IReadOnlyDictionary<string, JsonElement> p, Channel destination)
+    private async Task<object?> ForwardSingleAsync(IReadOnlyDictionary<string, JsonElement> p, Channel destination, CancellationToken cancellationToken)
     {
-        var nativeId = await context.ForwardSingleAsync(OneBotMessageReference(p), destination);
+        var nativeId = await context.ForwardSingleAsync(OneBotMessageReference(p), destination, cancellationToken);
         return new { message_id = await RegisterMessageAsync(destination, nativeId) };
     }
 
@@ -636,10 +649,10 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return result;
     }
 
-    private async Task<object> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message)
+    private async Task<object> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken cancellationToken)
     {
         message = ResolveReplies(message);
-        var nativeId = await context.SendAsync(channel, message);
+        var nativeId = await context.SendAsync(channel, message, cancellationToken);
         if (state is null) return new { message_id = nativeId };
         if (!long.TryParse(channel.Id, out var peerId) || !long.TryParse(nativeId, out var sequence))
             throw new InvalidOperationException("The active adapter returned a non-numeric QQ message reference.");
@@ -776,7 +789,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         return await state.Events.FetchAsync(cursor, TimeSpan.FromMilliseconds(timeout), cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<object?> HandleQuickOperationAsync(IReadOnlyDictionary<string, JsonElement> p)
+    private async Task<object?> HandleQuickOperationAsync(IReadOnlyDictionary<string, JsonElement> p, CancellationToken cancellationToken)
     {
         if (!p.TryGetValue("context", out var eventJson) || eventJson.ValueKind != JsonValueKind.Object ||
             !p.TryGetValue("operation", out var operation) || operation.ValueKind != JsonValueKind.Object)
@@ -797,7 +810,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
                 using var message = JsonDocument.Parse($"[{{\"type\":\"at\",\"data\":{{\"qq\":\"{userId}\"}}}},{{\"type\":\"text\",\"data\":{{\"text\":{JsonSerializer.Serialize(reply.ToString())}}}}}]");
                 replyParameters["message"] = message.RootElement.Clone();
             }
-            await SendAsync(target, Message(replyParameters)).ConfigureAwait(false);
+            await SendAsync(target, Message(replyParameters), cancellationToken).ConfigureAwait(false);
         }
 
         if (operation.TryGetProperty("delete", out var delete) && delete.ValueKind == JsonValueKind.True && eventJson.TryGetProperty("message_id", out var messageId))

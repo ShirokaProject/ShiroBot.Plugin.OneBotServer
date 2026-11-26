@@ -21,20 +21,30 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
 {
     private readonly WebApplication app;
     private readonly IOneBotActionHandler actions;
+    private readonly OneBotActionExecutor actionExecutor;
     private readonly OneBotServerOptions options;
     private readonly ConcurrentDictionary<Guid, OneBotWebSocketConnection> sockets = new();
 
-    private OneBotKestrelServer(WebApplication app, IOneBotActionHandler actions, OneBotServerOptions options)
+    private OneBotKestrelServer(WebApplication app, IOneBotActionHandler actions, OneBotServerOptions options,
+        OneBotActionExecutor actionExecutor)
     {
         this.app = app;
         this.actions = actions;
+        this.actionExecutor = actionExecutor;
         this.options = options;
     }
 
-    public static async Task<OneBotKestrelServer> StartAsync(
+    public static Task<OneBotKestrelServer> StartAsync(
         OneBotServerOptions options,
         IOneBotActionHandler actions,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        StartAsync(options, actions, new OneBotActionExecutor(actions), cancellationToken);
+
+    internal static async Task<OneBotKestrelServer> StartAsync(
+        OneBotServerOptions options,
+        IOneBotActionHandler actions,
+        OneBotActionExecutor actionExecutor,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(actions);
@@ -48,7 +58,7 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
         builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "true");
         builder.WebHost.UseUrls(options.ListenUrls.ToArray());
         var app = builder.Build();
-        var server = new OneBotKestrelServer(app, actions, options);
+        var server = new OneBotKestrelServer(app, actions, options, actionExecutor);
         app.UseWebSockets();
         server.MapEndpoints();
         await app.StartAsync(cancellationToken).ConfigureAwait(false);
@@ -156,10 +166,11 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
 
         try
         {
-            var response = await actions.HandleAsync(request, context.RequestAborted).ConfigureAwait(false);
+            var response = await actionExecutor.ExecuteAsync(request, context.RequestAborted).ConfigureAwait(false);
             await WriteJsonAsync(context, response, StatusCodes.Status200OK).ConfigureAwait(false);
             LogActionResult("HTTP", remote, request.Action, response.RetCode, response.Message, stopwatch.ElapsedMilliseconds);
         }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
         catch (OneBotActionException exception)
         {
             BotLog.Warning($"[OneBot/HTTP] {remote} Action {SafeAction(action)} 失败 retcode={exception.RetCode}: {exception.Message}");
@@ -211,35 +222,48 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
         sockets[id] = connection;
         BotLog.Info($"[OneBot/WS] {remote} 已连接，role={OneBotTransportProtocol.RoleName(role)}。");
         using var writerCancellation = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
-        var writer = connection.RunWriterAsync(writerCancellation.Token);
+        var connectionToken = writerCancellation.Token;
+        var writer = RunWriterAsync();
+        var pending = new HashSet<Task>();
         try
         {
             if (OneBotTransportProtocol.CanReceiveEvents(role))
-                await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), context.RequestAborted).ConfigureAwait(false);
-            while (connection.IsOpen && !context.RequestAborted.IsCancellationRequested)
+                await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), connectionToken).ConfigureAwait(false);
+            while (connection.IsOpen && !connectionToken.IsCancellationRequested)
             {
                 JsonElement? frame;
                 try
                 {
-                    frame = await connection.ReceiveAsync(context.RequestAborted).ConfigureAwait(false);
+                    frame = await connection.ReceiveAsync(connectionToken).ConfigureAwait(false);
                 }
                 catch (JsonException)
                 {
                     await connection.QueueAsync(JsonSerializer.SerializeToElement(
-                        OneBotResponse<object?>.Failed(1400, "invalid JSON")), context.RequestAborted).ConfigureAwait(false);
+                        OneBotResponse<object?>.Failed(1400, "invalid JSON")), connectionToken).ConfigureAwait(false);
                     continue;
                 }
                 if (frame is null) break;
-                await HandleWebSocketActionAsync(connection, frame.Value, role, context.RequestAborted).ConfigureAwait(false);
+                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleWebSocketActionAsync(connection, frame.Value, role, connectionToken)).ConfigureAwait(false);
             }
         }
         finally
         {
             sockets.TryRemove(id, out _);
             writerCancellation.Cancel();
+            await Task.WhenAll(pending).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             try { await writer.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
             BotLog.Info($"[OneBot/WS] {remote} 已断开，role={OneBotTransportProtocol.RoleName(role)}，status={connection.LastCloseStatus?.ToString() ?? "aborted"}，reason={connection.LastCloseDescription ?? "none"}。");
+        }
+        async Task RunWriterAsync()
+        {
+            try { await connection.RunWriterAsync(connectionToken).ConfigureAwait(false); }
+            catch when (!connectionToken.IsCancellationRequested)
+            {
+                socket.Abort();
+                throw;
+            }
+            finally { await writerCancellation.CancelAsync().ConfigureAwait(false); }
         }
     }
 
@@ -261,7 +285,11 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
             if (!OneBotTransportProtocol.CanReceiveActions(role))
                 throw new OneBotActionException(StatusCodes.Status403Forbidden, 1403, "this WebSocket connection does not accept API requests");
             var request = OneBotTransportProtocol.ParseWebSocketAction(frame);
-            response = (await actions.HandleAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+            response = (await actionExecutor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (OneBotActionException exception)
         {
@@ -278,6 +306,7 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
 
         await connection.QueueAsync(JsonSerializer.SerializeToElement(response), cancellationToken).ConfigureAwait(false);
         var action = frame.ValueKind == JsonValueKind.Object && frame.TryGetProperty("action", out var actionElement)
+            && actionElement.ValueKind == JsonValueKind.String
             ? actionElement.GetString() ?? "unknown"
             : "unknown";
         LogActionResult("WS", OneBotTransportProtocol.RoleName(role), action, response.RetCode, response.Message, stopwatch.ElapsedMilliseconds);

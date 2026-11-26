@@ -12,10 +12,10 @@ public abstract class OneBotContextFacadeBase : IOneBotContextFacade
 
     public virtual string StorageDirectory => Path.Combine(Path.GetTempPath(), "ShiroBot.Plugin.OneBotServer", "storage");
 
-    public virtual Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message) => Missing<string>();
+    public virtual Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken cancellationToken = default) => Missing<string>();
     public virtual Task DeleteAsync(string messageId, Channel? channel = null) => Missing();
     public virtual Task<object?> GetAsync(string messageId, Channel? channel = null) => Missing<object?>();
-    public virtual Task<object?> GetForwardedAsync(string forwardId) => Missing<object?>();
+    public virtual Task<object?> GetForwardedAsync(string forwardId, CancellationToken cancellationToken = default) => Missing<object?>();
     public virtual Task<object?> GetHistoryAsync(Channel channel, string? beforeMessageId, int limit) => Missing<object?>();
     public virtual Task MarkAsReadAsync(string messageId, Channel? channel = null) => Missing();
     public virtual Task<object?> GetLoginInfoAsync() => Missing<object?>();
@@ -54,8 +54,8 @@ public abstract class OneBotContextFacadeBase : IOneBotContextFacade
     public virtual Task DeleteAnnouncementAsync(long groupId, string noticeId) => Missing();
     public virtual Task<object?> GetEssenceMessagesAsync(long groupId, int pageIndex, int pageSize) => Missing<object?>();
     public virtual Task SetEssenceMessageAsync(long groupId, long messageId, bool enabled) => Missing();
-    public virtual Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId) => Missing<string>();
-    public virtual Task<string> UploadPrivateFileAsync(long userId, string file, string name) => Missing<string>();
+    public virtual Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId, CancellationToken cancellationToken = default) => Missing<string>();
+    public virtual Task<string> UploadPrivateFileAsync(long userId, string file, string name, CancellationToken cancellationToken = default) => Missing<string>();
     public virtual Task<object?> GetGroupFilesAsync(long groupId, string folderId) => Missing<object?>();
     public virtual Task<string> GetGroupFileUrlAsync(long groupId, string fileId) => Missing<string>();
     public virtual Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend) => Missing<string>();
@@ -77,8 +77,8 @@ public abstract class OneBotContextFacadeBase : IOneBotContextFacade
     public virtual Task<IReadOnlyList<ShiroBot.Model.QQ.QGroupMember>> GetGroupMemberEntitiesAsync(long groupId, bool noCache) => Missing<IReadOnlyList<ShiroBot.Model.QQ.QGroupMember>>();
     public virtual Task<string> GetUserNicknameAsync(long userId) => Missing<string>();
     public virtual Task<string> GetGroupNameAsync(long groupId) => Missing<string>();
-    public virtual Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt) => Missing<string>();
-    public virtual Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination) => Missing<string>();
-    public virtual Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source) => Missing<OneBotForwardNode>();
+    public virtual Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt, CancellationToken cancellationToken = default) => Missing<string>();
+    public virtual Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination, CancellationToken cancellationToken = default) => Missing<string>();
+    public virtual Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source, CancellationToken cancellationToken = default) => Missing<OneBotForwardNode>();
     public virtual Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId) => Missing<IReadOnlyList<OneBotGroupFileEntry>>();
 }

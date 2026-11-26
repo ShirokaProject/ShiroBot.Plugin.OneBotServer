@@ -14,12 +14,12 @@ namespace ShiroBot.Plugin.OneBotServer.Tests.Actions;
 public sealed class OneBotActionDispatcherTests
 {
     [TestMethod]
-    public void Actions_RegistersExactlyThe123ReferenceDispatcherActions()
+    public void Actions_RegistersReferenceActionsAndLagrangeGroupReaction()
     {
         var dispatcher = new OneBotActionDispatcher(new RecordingFacade());
 
         Assert.HasCount(38, dispatcher.StandardActionNames);
-        Assert.HasCount(123, dispatcher.Actions);
+        Assert.HasCount(124, dispatcher.Actions);
         CollectionAssert.Contains(dispatcher.StandardActionNames.ToArray(), "send_like");
         CollectionAssert.DoesNotContain(dispatcher.StandardActionNames.ToArray(), "set_group_portrait");
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "set_group_portrait");
@@ -28,6 +28,7 @@ public sealed class OneBotActionDispatcherTests
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "get_group_album_list");
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "download_file");
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "get_guild_list");
+        CollectionAssert.Contains(dispatcher.Actions.ToArray(), "set_group_reaction");
     }
 
     [TestMethod]
@@ -229,6 +230,38 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual((1L, "2"), facade.Announcement);
         Assert.AreEqual((1L, 3L, true), facade.Essence);
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+    }
+
+    [TestMethod]
+    public async Task SetGroupReaction_AcceptsLagrangeV1ParametersAndChecksMessageGroup()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        try
+        {
+            var facade = new RecordingFacade();
+            var state = await CreateStateAsync(directory);
+            var dispatcher = new OneBotActionDispatcher(facade, state);
+            var messageId = await state.Messages.RegisterAsync(new(MessageScene.Group, 12, 34));
+            var privateMessageId = await state.Messages.RegisterAsync(new(MessageScene.Friend, 12, 34));
+
+            var add = await dispatcher.DispatchAsync(Request("set_group_reaction", $$"""{"group_id":12,"message_id":{{messageId}},"code":"4"}"""));
+            Assert.AreEqual(0, add.RetCode);
+            Assert.AreEqual((12L, 34L, "4", true), facade.Reaction);
+
+            var remove = await dispatcher.DispatchAsync(Request("set_group_reaction", $$"""{"group_id":"12","message_id":"{{messageId}}","code":4,"is_add":false}"""));
+            Assert.AreEqual(0, remove.RetCode);
+            Assert.AreEqual((12L, 34L, "4", false), facade.Reaction);
+
+            var wrongGroup = await dispatcher.DispatchAsync(Request("set_group_reaction", $$"""{"group_id":13,"message_id":{{messageId}},"code":"5"}"""));
+            var privateMessage = await dispatcher.DispatchAsync(Request("set_group_reaction", $$"""{"group_id":12,"message_id":{{privateMessageId}},"code":"5"}"""));
+            Assert.AreEqual(1400, wrongGroup.RetCode);
+            Assert.AreEqual(1400, privateMessage.RetCode);
+            Assert.AreEqual((12L, 34L, "4", false), facade.Reaction);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -483,7 +516,7 @@ public sealed class OneBotActionDispatcherTests
 
         public override string StorageDirectory => StoragePath;
 
-        public override Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message)
+        public override Task<string> SendAsync(Channel channel, IReadOnlyList<MessageSegment> message, CancellationToken cancellationToken = default)
         {
             Channel = channel;
             Messages.Add(message);
@@ -518,14 +551,14 @@ public sealed class OneBotActionDispatcherTests
         public override Task SetReactionAsync(long groupId, long messageId, string reactionId, bool enabled) { Reaction = (groupId, messageId, reactionId, enabled); return Task.CompletedTask; }
         public override Task SendAnnouncementAsync(long groupId, string content, string? image) { Announcement = (groupId, content); return Task.CompletedTask; }
         public override Task SetEssenceMessageAsync(long groupId, long messageId, bool enabled) { Essence = (groupId, messageId, enabled); return Task.CompletedTask; }
-        public override Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId) { Upload = (groupId, file, name, folderId); return Task.FromResult("f"); }
+        public override Task<string> UploadGroupFileAsync(long groupId, string file, string name, string folderId, CancellationToken cancellationToken = default) { Upload = (groupId, file, name, folderId); return Task.FromResult("f"); }
         public override Task MoveGroupFileAsync(long groupId, string fileId, string targetFolderId, string parentFolderId) { Move = (groupId, fileId, targetFolderId, parentFolderId); return Task.CompletedTask; }
         public override Task RenameGroupFileAsync(long groupId, string fileId, string name, string parentFolderId) { Rename = (groupId, fileId, name, parentFolderId); return Task.CompletedTask; }
         public override Task PersistGroupFileAsync(long groupId, string fileId) { Persist = (groupId, fileId); return Task.CompletedTask; }
         public override Task<string> GetPrivateFileUrlAsync(long userId, string fileId, string fileHash, bool isSelfSend) { PrivateFile = (userId, fileId, fileHash, isSelfSend); return Task.FromResult("https://example.test/private"); }
         public override Task<string> GetGroupFileUrlAsync(long groupId, string fileId) { GroupFile = (groupId, fileId); return Task.FromResult("https://example.test/group"); }
         public string? ForwardedId { get; private set; }
-        public override Task<object?> GetForwardedAsync(string forwardId) { ForwardedId = forwardId; return Task.FromResult<object?>(new { messages = Array.Empty<object>() }); }
+        public override Task<object?> GetForwardedAsync(string forwardId, CancellationToken cancellationToken = default) { ForwardedId = forwardId; return Task.FromResult<object?>(new { messages = Array.Empty<object>() }); }
         public override Task<bool> CanSendImageAsync() => Task.FromResult(true);
         public override Task<bool> CanSendRecordAsync() => Task.FromResult(true);
         public override Task<object?> GetStatusAsync() => Task.FromResult<object?>(new { online = true, good = true });
@@ -545,10 +578,10 @@ public sealed class OneBotActionDispatcherTests
             new QGroupMember { GroupId = groupId.ToString(), UserId = "3", Nickname = "free" },
         ]);
         public override Task<string> GetUserNicknameAsync(long userId) => Task.FromResult("user-" + userId);
-        public override Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt)
+        public override Task<string> SendForwardAsync(Channel channel, IReadOnlyList<OneBotForwardNode> nodes, string? title, IReadOnlyList<string>? preview, string? summary, string? prompt, CancellationToken cancellationToken = default)
         { ForwardChannel = channel; ForwardNodes = nodes; return Task.FromResult("101"); }
-        public override Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source) => Task.FromResult(new OneBotForwardNode(2, "source", [OneBotSegment.Text("message")], null));
-        public override Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination) { SingleForward = (source, destination); return Task.FromResult("102"); }
+        public override Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source, CancellationToken cancellationToken = default) => Task.FromResult(new OneBotForwardNode(2, "source", [OneBotSegment.Text("message")], null));
+        public override Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination, CancellationToken cancellationToken = default) { SingleForward = (source, destination); return Task.FromResult("102"); }
         public override Task<IReadOnlyList<OneBotGroupFileEntry>> GetGroupFileEntriesAsync(long groupId, string folderId) =>
             Task.FromResult<IReadOnlyList<OneBotGroupFileEntry>>(folderId == "/"
                 ? [new("a", 5, "/", false), new("sub", 0, "/", true)]

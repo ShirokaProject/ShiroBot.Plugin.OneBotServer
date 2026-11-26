@@ -12,7 +12,7 @@ namespace ShiroBot.Plugin.OneBotServer.Plugin;
 [BotPlugin(
     "OneBotServer",
     Name = "OneBot Server",
-    Version = "0.2.6",
+    Version = "0.2.7",
     Author = "ShirokaProject",
     Category = PluginCategory.Utility,
     Description = "Exposes ShiroBot QQ events and actions through the OneBot v11 protocol.",
