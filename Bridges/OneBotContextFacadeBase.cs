@@ -1,3 +1,4 @@
+using ShiroBot.Model.QQ;
 using ShiroBot.SDK.Models;
 using ShiroBot.Plugin.OneBotServer.Infrastructure;
 
@@ -62,6 +63,13 @@ public abstract class OneBotContextFacadeBase : IOneBotContextFacade
     public virtual Task DeleteGroupFileAsync(long groupId, string fileId) => Missing();
     public virtual Task MoveGroupFileAsync(long groupId, string fileId, string targetFolderId, string parentFolderId) => Missing();
     public virtual Task RenameGroupFileAsync(long groupId, string fileId, string name, string parentFolderId) => Missing();
+    public virtual Task<IReadOnlyList<QOnlineClient>> GetOnlineClientsAsync(bool noCache, CancellationToken cancellationToken) => Missing<IReadOnlyList<QOnlineClient>>();
+    public virtual Task<string> ForwardGroupFileToGroupAsync(long sourceGroup, string fileId, long targetGroup, string folder, bool sendMessage, CancellationToken cancellationToken) => Missing<string>();
+    public virtual Task<string> ForwardGroupFileToFriendAsync(long sourceGroup, string fileId, long targetUser, bool sendMessage, CancellationToken cancellationToken) => Missing<string>();
+    public virtual Task<QFlashShare> UploadFlashFilesAsync(IReadOnlyList<string> files, string? title, CancellationToken cancellationToken) => Missing<QFlashShare>();
+    public virtual Task<QFlashFileSet> GetFlashFileSetAsync(string share, CancellationToken cancellationToken) => Missing<QFlashFileSet>();
+    public virtual Task DownloadFlashFilesAsync(string share, CancellationToken cancellationToken) => Missing();
+    public virtual Task<QFlashShare> ReshareFlashFilesAsync(string setId, CancellationToken cancellationToken) => Missing<QFlashShare>();
     public virtual Task PersistGroupFileAsync(long groupId, string fileId) => Missing();
     public virtual Task<string> CreateGroupFolderAsync(long groupId, string name) => Missing<string>();
     public virtual Task RenameGroupFolderAsync(long groupId, string folderId, string name) => Missing();

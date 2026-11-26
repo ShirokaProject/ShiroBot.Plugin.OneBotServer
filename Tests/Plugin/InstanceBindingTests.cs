@@ -509,6 +509,7 @@ public sealed class InstanceBindingTests
         public IWebHostContext WebHost => null!;
         public IPluginServices Services => null!;
         public string PluginDirectory { get; }
+        public TemporaryDirectory CreateTempDirectory(TimeSpan retention) => throw new NotSupportedException();
         public IReadOnlyList<UserReference> OwnerList => [];
         public IReadOnlyList<UserReference> AdminList => [];
         public TService? GetAdapterExtension<TService>() where TService : class => Extensions.GetValueOrDefault(typeof(TService)) as TService;

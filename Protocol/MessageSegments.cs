@@ -15,6 +15,10 @@ public static class MessageSegments
         QIncomingReply value => Segment("reply", ("id", value.MessageId)),
         QIncomingImage value => Segment("image", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("summary", value.Summary), ("sub_type", value.SubType)),
         QIncomingRecord value => Segment("record", ("file", value.ResourceId), ("url", value.TempUrl), ("duration", (long)value.Duration.TotalSeconds)),
+        QIncomingBubbleVideo value => Segment("bubble", ("file", value.ResourceId), ("fid", value.ResourceId), ("url", value.TempUrl),
+            ("width", value.Width), ("height", value.Height), ("seconds", (long)value.Duration.TotalSeconds),
+            ("duration", (long)value.Duration.TotalSeconds)),
+        QIncomingFlashFile value => Segment("flash_file", ("file_set_id", value.FileSetId), ("title", value.Title), ("scene_type", value.SceneType)),
         QIncomingVideo value => Segment("video", ("file", value.ResourceId), ("url", value.TempUrl), ("width", value.Width), ("height", value.Height), ("duration", (long)value.Duration.TotalSeconds)),
         QIncomingFile value => Segment("file", ("file", value.FileName), ("file_id", value.FileId), ("fid", value.FileId), ("file_size", value.FileSize.ToString(CultureInfo.InvariantCulture)), ("name", value.FileName)),
         QIncomingForward value => Segment("forward", ("id", value.ForwardId), ("title", value.Title), ("preview", value.Preview), ("summary", value.Summary)),
@@ -66,6 +70,7 @@ public static class MessageSegments
         "face" => new EmojiSegment(GetString(segment, "id")),
         "image" => new ImageSegment(GetFile(segment)) { ResourceId = GetOptionalString(segment, "resource_id"), Summary = GetOptionalString(segment, "summary"), Width = OptionalInt(segment, "width"), Height = OptionalInt(segment, "height") },
         "record" => new AudioSegment(GetFile(segment)) { ResourceId = GetOptionalString(segment, "resource_id"), Duration = GetOptionalLong(segment, "duration") is { } seconds ? TimeSpan.FromSeconds(seconds) : null, Transcript = GetOptionalString(segment, "transcript") },
+        "bubble" => new RawSegment("qq", "bubble", Bubble(segment)),
         "video" => new VideoSegment(GetFile(segment)) { ResourceId = GetOptionalString(segment, "resource_id"), ThumbnailUri = GetOptionalString(segment, "cover") },
         "file" => new FileSegment(GetFirstString(segment, ["url", "file", "file_id", "id"]))
         {
@@ -85,10 +90,14 @@ public static class MessageSegments
         "reply" => new QOutgoingReply(GetLong(segment, "id").ToString(CultureInfo.InvariantCulture)),
         "image" when GetOptionalString(segment, "type") != "flash" => new QOutgoingImage(GetFile(segment)) { Summary = GetOptionalString(segment, "summary"), SubType = GetOptionalString(segment, "sub_type") },
         "record" => new QOutgoingRecord(GetFile(segment)),
+        "bubble" => Bubble(segment),
         "video" => new QOutgoingVideo(GetFile(segment)) { ThumbUri = GetOptionalString(segment, "cover") },
         "json" or "light_app" => new QOutgoingLightApp(GetString(segment, "data")),
         _ => throw new NotSupportedException($"Unsupported OneBot message segment: {segment.Type}"),
     };
+
+    private static QOutgoingBubbleVideo Bubble(OneBotSegment segment) =>
+        new(GetFile(segment)) { ThumbUri = GetOptionalString(segment, "cover") ?? GetOptionalString(segment, "thumb") };
 
     private static OneBotSegment Segment(string type, params (string Key, object? Value)[] values) => new(type, values.Where(value => value.Value is not null).ToDictionary(value => value.Key, value => value.Value));
     private static string GetFile(OneBotSegment segment) => GetOptionalString(segment, "file") ?? GetString(segment, "url");

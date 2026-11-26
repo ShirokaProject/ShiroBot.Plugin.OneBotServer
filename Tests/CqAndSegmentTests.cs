@@ -40,4 +40,25 @@ public sealed class CqAndSegmentTests
         Assert.IsInstanceOfType<MentionSegment>(generic[1]);
         Assert.IsInstanceOfType<ImageSegment>(generic[2]);
     }
+    [TestMethod]
+    public void MessageSegments_PreserveBubbleAndFlashFileWireTypes()
+    {
+        var parts = MessageSegments.FromQq([
+            new QIncomingBubbleVideo("video-id", "https://example.test/video") { Duration = TimeSpan.FromSeconds(2) },
+            new QIncomingFlashFile("file-set", "share") { SceneType = 2 }
+        ]);
+        Assert.AreEqual("bubble", parts[0].Type);
+        Assert.AreEqual(2L, parts[0].Data["seconds"]);
+        Assert.AreEqual("flash_file", parts[1].Type);
+        Assert.AreEqual("file-set", parts[1].Data["file_set_id"]);
+
+        var input = new OneBotSegment("bubble", new Dictionary<string, object?>
+        {
+            ["file"] = "file:///tmp/video.mp4",
+            ["cover"] = "file:///tmp/preview.jpg"
+        });
+        var native = (QOutgoingBubbleVideo)MessageSegments.ToQq([input]).Single();
+        Assert.AreEqual("file:///tmp/preview.jpg", native.ThumbUri);
+        Assert.AreEqual(native, ((RawSegment)MessageSegments.ToGeneric([input]).Single()).Payload);
+    }
 }

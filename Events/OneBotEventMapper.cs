@@ -145,9 +145,28 @@ public static class OneBotEventMapper
             QGroupMemberDecrease member => Notice(platform, "group_decrease", Add(Add(Add(data, "group_id", ProtocolId(member.GroupId)), "user_id", ProtocolId(member.UserId)), "operator_id", NumericOrNull(member.OperatorId)), ProtocolId(member.UserId).ToString(CultureInfo.InvariantCulture) == member.SelfId ? "kick_me" : NumericOrNull(member.OperatorId) is null ? "leave" : "kick"),
             QFriendRequestReceived request => Request(platform, "friend", Add(Add(Add(data, "user_id", ProtocolId(request.InitiatorId)), "comment", request.Comment), "flag", RequestFlagCodec.Encode(new RequestFlag("friend", InitiatorUid: request.InitiatorUid)))),
             QGroupInvitation invitation => Request(platform, "group", Add(Add(Add(data, "group_id", ProtocolId(invitation.GroupId)), "user_id", ProtocolId(invitation.InitiatorId)), "flag", RequestFlagCodec.Encode(new RequestFlag("invitation", ProtocolId(invitation.GroupId), NativeToken: invitation.InvitationId))), "invite"),
+            QFlashFileTransfer transfer => MapFlashTransfer(platform, data, transfer),
             QBotOffline offline => Meta(platform, "lifecycle", Add(data, "reason", offline.Reason)) with { SubType = "disable" },
             _ => Notice(platform, "shirobot_notice", data, platform.Kind)
         };
+    }
+
+    private static OneBotEvent MapFlashTransfer(PlatformEvent platform, IDictionary<string, object?> data,
+        QFlashFileTransfer transfer)
+    {
+        data["file_set_id"] = transfer.FileSetId;
+        data["title"] = transfer.Title;
+        data["share_link"] = transfer.ShareLink;
+        if (transfer.State is QFlashTransferState.Uploading or QFlashTransferState.Downloading)
+        {
+            var sizeField = transfer.State == QFlashTransferState.Uploading ? "uploaded_size" : "downloaded_size";
+            data[sizeField] = transfer.TransferredSize ?? 0;
+            data["total_size"] = transfer.TotalSize ?? 0;
+            data["speed"] = transfer.Speed ?? 0;
+            data["remain_seconds"] = (long)(transfer.RemainingTime?.TotalSeconds ?? 0);
+        }
+        data["files"] = transfer.Files.Select(file => new { name = file.Name, size = file.Size, path = file.Path }).ToArray();
+        return Notice(platform, "flash_file", data, transfer.State.ToString().ToLowerInvariant());
     }
 
     private static OneBotEvent Notice(BotEvent evt, string noticeType, IDictionary<string, object?> data, string? subType = null) => Event(evt, "notice", data, noticeType: noticeType, subType: subType);

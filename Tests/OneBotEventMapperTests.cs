@@ -14,6 +14,41 @@ public sealed class OneBotEventMapperTests
     private static readonly OneBotEventFormatConfig Format = new() { UseArrayMessage = true };
 
     [TestMethod]
+    public void Map_FlashTransferProgressAndCompletionKeepOneBotNoticeShape()
+    {
+        var update = new QFlashFileTransfer
+        {
+            State = QFlashTransferState.Downloading,
+            FileSetId = "file-set",
+            TransferredSize = 32,
+            TotalSize = 64,
+            RemainingTime = TimeSpan.FromSeconds(2),
+            Files = [new("sample.txt", 64)]
+        };
+        OneBotEvent Map(QFlashFileTransfer raw) => OneBotEventMapper.Map(new PlatformEvent
+        {
+            Platform = "qq",
+            SelfId = "10001",
+            Kind = QEventKinds.FlashFileTransfer,
+            Raw = raw
+        }, Format);
+        var progress = Map(update);
+        Assert.AreEqual("flash_file", progress.NoticeType);
+        Assert.AreEqual("downloading", progress.SubType);
+        Assert.AreEqual(32L, progress.Data["downloaded_size"]);
+        Assert.AreEqual(2L, progress.Data["remain_seconds"]);
+
+        var completed = Map(update with
+        {
+            State = QFlashTransferState.Downloaded,
+            Files = [new("sample.txt", 64) { Path = "/tmp/sample.txt" }]
+        });
+        Assert.AreEqual("downloaded", completed.SubType);
+        var files = JsonSerializer.SerializeToElement(completed.Data["files"]);
+        Assert.AreEqual("/tmp/sample.txt", files[0].GetProperty("path").GetString());
+    }
+
+    [TestMethod]
     public async Task MapAsync_MessageUsesProtocolTimeNumericSelfIdMessageSentAndRegisteredId()
     {
         var timestamp = DateTimeOffset.FromUnixTimeSeconds(1_700_000_001);

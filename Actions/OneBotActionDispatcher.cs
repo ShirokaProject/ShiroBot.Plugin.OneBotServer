@@ -36,7 +36,7 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         "get_friends_with_category", "set_qq_profile", "get_qq_avatar", "get_group_system_msg",
         "get_group_ignore_add_request", "get_doubt_friends_add_request", "set_doubt_friends_add_request",
         "batch_delete_group_member", "get_group_shut_list", "send_group_forward_msg", "send_private_forward_msg",
-        "send_forward_msg", "forward_friend_single_msg", "forward_group_single_msg", "get_event",
+        "send_forward_msg", "forward_friend_single_msg", "forward_group_single_msg", "get_online_clients", "get_event",
         "set_group_reaction", "set_msg_emoji_like", "unset_msg_emoji_like", "fetch_emoji_like",
     ];
 
@@ -46,13 +46,15 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
         "get_group_root_files", "get_group_files_by_folder", "create_group_file_folder", "delete_group_folder",
         "rename_group_file_folder", "move_group_file", "rename_group_file", "delete_group_file",
         "set_group_file_forever", "get_group_file_system_info", "download_file", "get_file",
+        "forward_group_file_to_group", "forward_group_file_to_friend", "get_flash_file_info", "download_flash_file",
+        "upload_flash_file", "reshare_flash_file",
     ];
 
     private static readonly string[] UnsupportedExtendedActions =
     [
         "get_recommend_group_face", "get_ai_record", "get_group_ai_record", "send_group_ai_record", "get_ai_characters",
         "voice_msg_to_text", "send_pb", "set_config", "get_config", "llonebot_debug", "scan_qrcode", "get_rkey",
-        "get_flash_file_info", "download_flash_file", "upload_flash_file", "reshare_flash_file", "get_group_album_list",
+        "get_group_album_list",
         "upload_group_album", "get_group_album_media_list", "create_group_album", "delete_group_album",
         "get_robot_uin_range", "set_online_status", "set_input_status", "get_profile_like", "get_profile_like_me",
         "set_friend_category", "set_friend_remark", "set_group_msg_mask", "set_group_remark",
@@ -278,6 +280,33 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             case "send_forward_msg": return await SendForwardAsync(p, Target(p), cancellationToken);
             case "forward_friend_single_msg": return await ForwardSingleAsync(p, Channel.Direct(Id(p, "user_id").ToString()), cancellationToken);
             case "forward_group_single_msg": return await ForwardSingleAsync(p, Channel.Group(Id(p, "group_id").ToString()), cancellationToken);
+            case "get_online_clients":
+                var clients = await context.GetOnlineClientsAsync(Bool(p, "no_cache"), cancellationToken);
+                return new { clients = clients.Select(client => new
+                {
+                    app_id = client.AppId, device_name = client.DeviceName ?? string.Empty,
+                    device_kind = client.DeviceKind ?? string.Empty,
+                }).ToArray() };
+            case "forward_group_file_to_group":
+                return new { file_id = await context.ForwardGroupFileToGroupAsync(Id(p, "group_id"),
+                    OneBotParameters.String(p, "file_id"), Id(p, "target_group_id"),
+                    FirstString(p, ["target_folder_id", "folder_id"], "/"), Bool(p, "send_message", true), cancellationToken) };
+            case "forward_group_file_to_friend":
+                return new { file_id = await context.ForwardGroupFileToFriendAsync(Id(p, "group_id"),
+                    OneBotParameters.String(p, "file_id"), Id(p, "user_id"), Bool(p, "send_message", true), cancellationToken) };
+            case "upload_flash_file":
+                return FlashShareInfo(await context.UploadFlashFilesAsync(FlashPaths(p), OptionalString(p, "title"), cancellationToken));
+            case "get_flash_file_info":
+                var set = await context.GetFlashFileSetAsync(FirstString(p, ["share_link", "file_set_id"]), cancellationToken);
+                return new
+                {
+                    file_set_id = set.FileSetId, title = set.Title, share_link = set.ShareLink,
+                    total_file_size = set.TotalSize, files = set.Files.Select(file => new { name = file.Name, size = file.Size }).ToArray(),
+                };
+            case "download_flash_file":
+                return await Void(context.DownloadFlashFilesAsync(FirstString(p, ["share_link", "file_set_id"]), cancellationToken));
+            case "reshare_flash_file":
+                return FlashShareInfo(await context.ReshareFlashFilesAsync(OneBotParameters.String(p, "file_set_id"), cancellationToken));
             case "upload_group_file": return new { file_id = await context.UploadGroupFileAsync(Id(p, "group_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), FirstString(p, ["folder", "folder_id", "parent_folder_id"], "/"), cancellationToken) };
             case "upload_private_file": return new { file_id = await context.UploadPrivateFileAsync(Id(p, "user_id"), FirstString(p, ["file", "file_uri"]), FirstString(p, ["name", "file_name"], "file"), cancellationToken) };
             case "get_group_root_files": return await context.GetGroupFilesAsync(Id(p, "group_id"), "/");
@@ -300,6 +329,28 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             default: throw new NotSupportedException($"The host SDK does not expose action '{action}'.");
         }
     }
+
+    private static IReadOnlyList<string> FlashPaths(IReadOnlyDictionary<string, JsonElement> parameters)
+    {
+        if (!parameters.TryGetValue("paths", out var value) || value.ValueKind != JsonValueKind.Array ||
+            value.GetArrayLength() == 0)
+            throw new OneBotParameterException("paths must be a non-empty array of file URIs.");
+
+        var paths = new List<string>(value.GetArrayLength());
+        foreach (var entry in value.EnumerateArray())
+        {
+            if (entry.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(entry.GetString()))
+                throw new OneBotParameterException("Each entry in paths must be a non-empty string.");
+            paths.Add(entry.GetString()!);
+        }
+
+        return paths;
+    }
+
+    private static object FlashShareInfo(QFlashShare share) => new
+    {
+        file_set_id = share.FileSetId, share_link = share.ShareLink, expire_time = share.ExpiresAt.ToUnixTimeSeconds()
+    };
 
     private async Task<object?> FetchEmojiLikesAsync(IReadOnlyDictionary<string, JsonElement> p)
     {

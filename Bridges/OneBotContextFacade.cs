@@ -258,6 +258,31 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
     public Task DeleteGroupFileAsync(long groupId, string fileId) => File.DeleteGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), fileId);
     public Task MoveGroupFileAsync(long groupId, string fileId, string targetFolderId, string parentFolderId) => File.MoveGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), fileId, targetFolderId, parentFolderId);
     public Task RenameGroupFileAsync(long groupId, string fileId, string name, string parentFolderId) => File.RenameGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), fileId, name, parentFolderId);
+    public Task<IReadOnlyList<QOnlineClient>> GetOnlineClientsAsync(bool noCache, CancellationToken cancellationToken) =>
+        System.GetOnlineClientsAsync(noCache, cancellationToken);
+
+    public Task<string> ForwardGroupFileToGroupAsync(long sourceGroup, string fileId, long targetGroup, string folder,
+        bool sendMessage, CancellationToken cancellationToken) =>
+        File.ForwardGroupFileToGroupAsync(sourceGroup.ToString(CultureInfo.InvariantCulture), fileId,
+            targetGroup.ToString(CultureInfo.InvariantCulture), folder, sendMessage, cancellationToken);
+
+    public Task<string> ForwardGroupFileToFriendAsync(long sourceGroup, string fileId, long targetUser, bool sendMessage,
+        CancellationToken cancellationToken) =>
+        File.ForwardGroupFileToFriendAsync(sourceGroup.ToString(CultureInfo.InvariantCulture), fileId,
+            targetUser.ToString(CultureInfo.InvariantCulture), sendMessage, cancellationToken);
+
+    public Task<QFlashShare> UploadFlashFilesAsync(IReadOnlyList<string> files, string? title, CancellationToken cancellationToken) =>
+        File.UploadFlashFilesAsync(files, title, cancellationToken);
+
+    public Task<QFlashFileSet> GetFlashFileSetAsync(string share, CancellationToken cancellationToken) =>
+        File.GetFlashFileSetAsync(share, cancellationToken);
+
+    public Task DownloadFlashFilesAsync(string share, CancellationToken cancellationToken) =>
+        File.DownloadFlashFilesAsync(share, cancellationToken);
+
+    public Task<QFlashShare> ReshareFlashFilesAsync(string setId, CancellationToken cancellationToken) =>
+        File.ReshareFlashFilesAsync(setId, cancellationToken);
+
     public Task PersistGroupFileAsync(long groupId, string fileId) => File.PersistGroupFileAsync(groupId.ToString(CultureInfo.InvariantCulture), fileId);
     public Task<string> CreateGroupFolderAsync(long groupId, string name) => File.CreateGroupFolderAsync(groupId.ToString(CultureInfo.InvariantCulture), name);
     public Task RenameGroupFolderAsync(long groupId, string folderId, string name) => File.RenameGroupFolderAsync(groupId.ToString(CultureInfo.InvariantCulture), folderId, name);
@@ -287,9 +312,21 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
 
     public async Task<string> ForwardSingleAsync(OneBotMessageReference source, Channel destination, CancellationToken cancellationToken = default)
     {
-        var message = await Message.GetMessageAsync(ToScene(source.Scene), source.PeerId.ToString(CultureInfo.InvariantCulture), source.Sequence.ToString(CultureInfo.InvariantCulture), cancellationToken)
+        var api = Message;
+        var scene = ToScene(source.Scene);
+        var peerId = source.PeerId.ToString(CultureInfo.InvariantCulture);
+        var messageId = source.Sequence.ToString(CultureInfo.InvariantCulture);
+
+        // Extensions from older adapters inherit the SDK's optional default implementation.
+        var method = typeof(IQMessageApi).GetMethod(nameof(IQMessageApi.ForwardSingleMessageAsync))!;
+        var map = api.GetType().GetInterfaceMap(typeof(IQMessageApi));
+        var native = map.TargetMethods[Array.IndexOf(map.InterfaceMethods, method)];
+        if (native.DeclaringType?.IsInterface != true)
+            return await api.ForwardSingleMessageAsync(scene, peerId, messageId, ToScene(destination), destination.Id, cancellationToken);
+
+        var sourceMessage = await api.GetMessageAsync(scene, peerId, messageId, cancellationToken)
             ?? throw new InvalidOperationException("The source message no longer exists.");
-        return (await Message.SendMessageAsync(ToScene(destination), destination.Id, ToOutgoing(message.Segments), cancellationToken)).ToString();
+        return await api.SendMessageAsync(ToScene(destination), destination.Id, ToOutgoing(sourceMessage.Segments), cancellationToken);
     }
 
     public async Task<OneBotForwardNode> GetForwardNodeAsync(OneBotMessageReference source, CancellationToken cancellationToken = default)
@@ -411,6 +448,7 @@ public sealed class OneBotContextFacade(IBotContext context) : IOneBotContextFac
         QIncomingImage value => new QOutgoingImage(value.TempUrl),
         QIncomingRecord value => new QOutgoingRecord(value.TempUrl),
         QIncomingVideo value => new QOutgoingVideo(value.TempUrl),
+        QIncomingBubbleVideo value => new QOutgoingBubbleVideo(value.TempUrl),
         QIncomingLightApp value => new QOutgoingLightApp(value.JsonPayload),
         _ => throw Unsupported($"Cannot forward QQ segment {segment.GetType().Name} as a standalone message."),
     }).ToArray();

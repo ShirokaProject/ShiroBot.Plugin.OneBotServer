@@ -1,6 +1,6 @@
 # ShiroBot OneBot Server
 
-当前发布：`v0.2.2`。本版本使用 SDK `0.9.8`，需要宿主 `0.9.8` 的新 ABI；旧宿主不兼容。
+`v0.2.8` 使用 ShiroBot SDK `1.0.5`，需要宿主 `1.0.5` 和 QQ Model ABI `1.2`。
 
 `ShiroBot.Plugin.OneBotServer` 将 ShiroBot 已加载适配器的通用消息能力转换为 OneBot 11 服务，并在可用时提供 QQ 扩展能力。
 
@@ -18,11 +18,10 @@
 
 ## 运行要求
 
-- .NET 10
-- ShiroBot 0.9.8 或更高版本
-- ShiroBot API 0.9.2
-- `ShiroBot.Model.QQ` 0.9.8 或更高版本
-- `ShiroBot.SDK` NuGet 0.9.8
+- .NET 11
+- ShiroBot 1.0.5 或更高版本
+- `ShiroBot.Model.QQ` 1.0.5 或更高版本
+- `ShiroBot.SDK` NuGet 1.0.5
 - 至少一个已加载的适配器实例
 
 插件本身不连接平台。普通消息 API 使用 SDK 的平台无关模型；群管理、好友、文件和其他 QQ 扩展 action 需要适配器实现相应的可选 SDK 接口，否则会返回明确的 unsupported 错误。
@@ -40,6 +39,14 @@
 ```
 
 插件不会把未实现的能力伪装成成功。
+
+## QQ Model 1.2 扩展
+
+- `forward_group_single_msg` / `forward_friend_single_msg` 接受源 `message_id` 和目标 `group_id` / `user_id`，返回新的 OneBot `message_id`。
+- `get_online_clients` 接受可选 `no_cache`，返回 `clients`。
+- `bubble` 消息段接受 `file` 或 `url`，以及可选的 `cover` 或 `thumb`。
+- `forward_group_file_to_group` 接受 `group_id`、`file_id`、`target_group_id`、可选 `target_folder_id` 和 `send_message`。目标好友用 `forward_group_file_to_friend` 并传 `user_id`。两个动作均返回 `file_id`。
+- `upload_flash_file` 接受 `paths` 数组和可选 `title`。查询和下载分别用 `get_flash_file_info`、`download_flash_file`，接受 `share_link` 或 `file_set_id`。`reshare_flash_file` 接受 `file_set_id`。下载完成由 `flash_file` 通知回传本地路径。
 
 ## 安装
 

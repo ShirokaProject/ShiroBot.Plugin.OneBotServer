@@ -59,6 +59,13 @@ public interface IOneBotContextFacade
     Task DeleteGroupFileAsync(long groupId, string fileId);
     Task MoveGroupFileAsync(long groupId, string fileId, string targetFolderId, string parentFolderId);
     Task RenameGroupFileAsync(long groupId, string fileId, string name, string parentFolderId);
+    Task<IReadOnlyList<QOnlineClient>> GetOnlineClientsAsync(bool noCache, CancellationToken cancellationToken);
+    Task<string> ForwardGroupFileToGroupAsync(long sourceGroup, string fileId, long targetGroup, string folder, bool sendMessage, CancellationToken cancellationToken);
+    Task<string> ForwardGroupFileToFriendAsync(long sourceGroup, string fileId, long targetUser, bool sendMessage, CancellationToken cancellationToken);
+    Task<QFlashShare> UploadFlashFilesAsync(IReadOnlyList<string> files, string? title, CancellationToken cancellationToken);
+    Task<QFlashFileSet> GetFlashFileSetAsync(string share, CancellationToken cancellationToken);
+    Task DownloadFlashFilesAsync(string share, CancellationToken cancellationToken);
+    Task<QFlashShare> ReshareFlashFilesAsync(string setId, CancellationToken cancellationToken);
     Task PersistGroupFileAsync(long groupId, string fileId);
     Task<string> CreateGroupFolderAsync(long groupId, string name);
     Task RenameGroupFolderAsync(long groupId, string folderId, string name);

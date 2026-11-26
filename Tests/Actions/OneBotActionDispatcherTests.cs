@@ -19,7 +19,7 @@ public sealed class OneBotActionDispatcherTests
         var dispatcher = new OneBotActionDispatcher(new RecordingFacade());
 
         Assert.HasCount(38, dispatcher.StandardActionNames);
-        Assert.HasCount(124, dispatcher.Actions);
+        Assert.HasCount(127, dispatcher.Actions);
         CollectionAssert.Contains(dispatcher.StandardActionNames.ToArray(), "send_like");
         CollectionAssert.DoesNotContain(dispatcher.StandardActionNames.ToArray(), "set_group_portrait");
         CollectionAssert.Contains(dispatcher.Actions.ToArray(), "set_group_portrait");
@@ -38,7 +38,7 @@ public sealed class OneBotActionDispatcherTests
         [
             "get_recommend_group_face", "get_ai_record", "get_group_ai_record", "send_group_ai_record", "get_ai_characters",
             "voice_msg_to_text", "send_pb", "set_config", "get_config", "llonebot_debug", "scan_qrcode", "get_rkey",
-            "get_flash_file_info", "download_flash_file", "upload_flash_file", "reshare_flash_file", "get_group_album_list",
+            "get_group_album_list",
             "upload_group_album", "get_group_album_media_list", "create_group_album", "delete_group_album",
             "get_robot_uin_range", "set_online_status", "set_input_status", "get_profile_like", "get_profile_like_me",
             "set_friend_category", "set_friend_remark", "set_group_msg_mask", "set_group_remark",
@@ -51,6 +51,88 @@ public sealed class OneBotActionDispatcherTests
             CollectionAssert.Contains(dispatcher.Actions.ToArray(), action);
             Assert.AreEqual(1404, (await dispatcher.DispatchAsync(Request(action, "{}"))).RetCode, action);
         }
+    }
+
+    [TestMethod]
+    public async Task NewQqModelActions_UseValidatedParametersAndOneBotShapes()
+    {
+        var facade = new NewModelFacade();
+        var dispatcher = new OneBotActionDispatcher(facade);
+
+        var clients = await dispatcher.DispatchAsync(Request("get_online_clients", """{"no_cache":true}"""));
+        Assert.AreEqual(42L, JsonSerializer.SerializeToElement(clients.Data).GetProperty("clients")[0].GetProperty("app_id").GetInt64());
+        Assert.IsTrue(facade.NoCache);
+
+        var copied = await dispatcher.DispatchAsync(Request("forward_group_file_to_group",
+            """{"group_id":1,"target_group_id":2,"target_folder_id":"/folder","file_id":"/file","send_message":false}"""));
+        Assert.AreEqual("/copy", JsonSerializer.SerializeToElement(copied.Data).GetProperty("file_id").GetString());
+        Assert.AreEqual((1L, "/file", 2L, "/folder", false), facade.GroupCopy);
+
+        var privateCopy = await dispatcher.DispatchAsync(Request("forward_group_file_to_friend",
+            """{"group_id":1,"user_id":3,"file_id":"/file"}"""));
+        Assert.AreEqual(0, privateCopy.RetCode);
+        Assert.AreEqual((1L, "/file", 3L, true), facade.FriendCopy);
+
+        var invalidUpload = await dispatcher.DispatchAsync(Request("upload_flash_file", """{"paths":[123]}"""));
+        Assert.AreEqual(1400, invalidUpload.RetCode);
+        var upload = await dispatcher.DispatchAsync(Request("upload_flash_file", """{"title":"sample","paths":["file:///tmp/sample.txt"]}"""));
+        Assert.AreEqual("test-set", JsonSerializer.SerializeToElement(upload.Data).GetProperty("file_set_id").GetString());
+        CollectionAssert.AreEqual(new[] { "file:///tmp/sample.txt" }, facade.UploadPaths.ToArray());
+        var info = await dispatcher.DispatchAsync(Request("get_flash_file_info", """{"share_link":"https://qfile.qq.com/q/sample"}"""));
+        Assert.AreEqual(12L, JsonSerializer.SerializeToElement(info.Data).GetProperty("total_file_size").GetInt64());
+
+        var download = await dispatcher.DispatchAsync(Request("download_flash_file", """{"file_set_id":"test-set"}"""));
+        Assert.AreEqual(0, download.RetCode);
+        Assert.AreEqual("test-set", facade.DownloadedSet);
+        var reshare = await dispatcher.DispatchAsync(Request("reshare_flash_file", """{"file_set_id":"test-set"}"""));
+        Assert.AreEqual("new-set", JsonSerializer.SerializeToElement(reshare.Data).GetProperty("file_set_id").GetString());
+    }
+
+    private sealed class NewModelFacade : OneBotContextFacadeBase
+    {
+        public bool NoCache { get; private set; }
+        public (long, string, long, string, bool) GroupCopy { get; private set; }
+        public (long, string, long, bool) FriendCopy { get; private set; }
+        public IReadOnlyList<string> UploadPaths { get; private set; } = [];
+        public string? DownloadedSet { get; private set; }
+
+        public override Task<IReadOnlyList<QOnlineClient>> GetOnlineClientsAsync(bool noCache, CancellationToken token)
+        {
+            NoCache = noCache;
+            return Task.FromResult<IReadOnlyList<QOnlineClient>>([new() { AppId = 42, DeviceName = "phone", DeviceKind = "mobile" }]);
+        }
+
+        public override Task<string> ForwardGroupFileToGroupAsync(long group, string file, long target, string folder,
+            bool sendMessage, CancellationToken token)
+        {
+            GroupCopy = (group, file, target, folder, sendMessage);
+            return Task.FromResult("/copy");
+        }
+
+        public override Task<string> ForwardGroupFileToFriendAsync(long group, string file, long target, bool sendMessage,
+            CancellationToken token)
+        {
+            FriendCopy = (group, file, target, sendMessage);
+            return Task.FromResult("private-copy");
+        }
+
+        public override Task<QFlashShare> UploadFlashFilesAsync(IReadOnlyList<string> paths, string? title, CancellationToken token)
+        {
+            UploadPaths = paths;
+            return Task.FromResult(new QFlashShare("test-set", "https://qfile.qq.com/q/sample", DateTimeOffset.UnixEpoch));
+        }
+
+        public override Task<QFlashFileSet> GetFlashFileSetAsync(string share, CancellationToken token) =>
+            Task.FromResult(new QFlashFileSet { FileSetId = "test-set", ShareLink = share, TotalSize = 12, Files = [new("sample.txt", 12)] });
+
+        public override Task DownloadFlashFilesAsync(string share, CancellationToken token)
+        {
+            DownloadedSet = share;
+            return Task.CompletedTask;
+        }
+
+        public override Task<QFlashShare> ReshareFlashFilesAsync(string set, CancellationToken token) =>
+            Task.FromResult(new QFlashShare("new-set", "https://qfile.qq.com/q/new", DateTimeOffset.UnixEpoch));
     }
 
     [TestMethod]
