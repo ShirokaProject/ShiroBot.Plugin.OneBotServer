@@ -100,23 +100,24 @@ public sealed class InstanceBindingTests
         var directory = Path.Combine(Path.GetTempPath(), "onebot-legacy-test-" + Guid.NewGuid().ToString("N"));
         var legacyPath = Path.Combine(directory, "message-ids.json");
         var instancePath = Path.Combine(directory, "instances", "first", "message-ids.json");
-        var legacy = await Infrastructure.MessageIdRegistry.OpenAsync(legacyPath, 10);
-        var oldReference = new Infrastructure.OneBotMessageReference(Infrastructure.MessageScene.Group, 77, 88);
-        var oldId = await legacy.RegisterAsync(oldReference);
-        var seed = await Infrastructure.MessageIdRegistry.ReadNextIdAsync(legacyPath);
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(legacyPath, """
+                {"Version":1,"NextId":2,"Entries":[{"Id":1,"Scene":1,"PeerId":77,"Sequence":88}]}
+                """);
 
-        var current = await Infrastructure.MessageIdRegistry.OpenAsync(instancePath, 10, minimumNextId: seed);
-        var currentReference = new Infrastructure.OneBotMessageReference(Infrastructure.MessageScene.Group, 77, 89);
-        var currentId = await current.RegisterAsync(currentReference);
-        Assert.IsTrue(currentId > oldId);
-        Assert.IsFalse(current.TryResolve(oldId, out _));
+            using var current = await Infrastructure.MessageIdRegistry.OpenAsync(instancePath, 10, sharedLegacyPath: legacyPath);
+            var currentReference = new Infrastructure.OneBotMessageReference(Infrastructure.MessageScene.Group, 77, 89);
+            Assert.AreEqual(2, await current.RegisterAsync(currentReference));
+            Assert.IsFalse(current.TryResolve(1, out _));
 
-        var reopened = await Infrastructure.MessageIdRegistry.OpenAsync(instancePath, 10);
-        Assert.IsFalse(reopened.TryResolve(oldId, out _));
-        var afterRestart = await reopened.RegisterAsync(new(Infrastructure.MessageScene.Group, 77, 90));
-        Assert.IsTrue(afterRestart > currentId);
-        Assert.IsTrue(File.Exists(legacyPath));
-        if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            using var reopened = await Infrastructure.MessageIdRegistry.OpenAsync(instancePath, 10);
+            Assert.IsFalse(reopened.TryResolve(1, out _));
+            Assert.AreEqual(3, await reopened.RegisterAsync(new(Infrastructure.MessageScene.Group, 77, 90)));
+            Assert.IsTrue(File.Exists(legacyPath));
+        }
+        finally { Directory.Delete(directory, recursive: true); }
     }
 
     [TestMethod]

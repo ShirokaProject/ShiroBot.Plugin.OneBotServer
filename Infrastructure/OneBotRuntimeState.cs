@@ -4,7 +4,7 @@ using ShiroBot.Plugin.OneBotServer.Events;
 
 namespace ShiroBot.Plugin.OneBotServer.Infrastructure;
 
-public sealed class OneBotRuntimeState
+public sealed class OneBotRuntimeState : IDisposable
 {
     public OneBotRuntimeState(MessageIdRegistry messages, int maxEntries, int eventQueueCapacity, byte[] requestFlagKey)
     {
@@ -22,6 +22,8 @@ public sealed class OneBotRuntimeState
     public ReactionRegistry Reactions { get; }
     public EventQueue<OneBotEvent> Events { get; }
     public byte[] RequestFlagKey { get; }
+
+    public void Dispose() => Messages.Dispose();
 
     public static byte[] DeriveRequestFlagKey(string? configuredSecret, string? accessToken)
     {

@@ -391,9 +391,11 @@ QQ 原生消息通常由会话类型、会话 ID 和消息序列号共同定位�
 OneBot message_id <-> scene + peer_id + message_seq
 ```
 
-映射使用临时文件和原子替换写入。重启后仍可继续执行 `get_msg`、`delete_msg`、回复、Reaction 和精华消息操作。
+每个适配器实例使用一个 SQLite 数据库。默认位置为 `data/instances/<实例 ID 的哈希>/message-ids.sqlite3`。配置路径以 `.json` 结尾时会替换扩展名，其他路径会追加 `.sqlite3`。映射保存到 SQLite 后，重启仍可用相同的 ID 查消息、撤回、回复、Reaction 和设置精华消息。
 
-超过 `registry_max_entries` 后，最旧映射会被淘汰。使用已淘汰 ID 时会返回“unknown or expired”错误。
+首次打开数据库时，会将该实例旧 JSON 的映射导入当前登录账号，保留已有 ID 和分配游标。旧 JSON 会保留在原路径。更早的全局 JSON 只用于确定初始游标。账号隔离以 OneBot 运行时启动时解析的登录账号为准。
+
+每实例超过 `registry_max_entries` 后，最早登记的映射会被淘汰。使用已淘汰的 ID，或在其他账号的运行时使用此 ID 时，会返回“unknown or expired”错误。
 
 ## 安全说明
 
@@ -427,7 +429,7 @@ GitHub Actions 会执行完整测试并生成：
 ShiroBot.Plugin.OneBotServer.zip
 ```
 
-ZIP 中只包含插件 DLL，以及可选 PDB。SDK 与平台 Model 由 ShiroBot 宿主提供。
+ZIP 中包含插件 DLL。ShiroBot 宿主会读取 DLL 内的依赖清单，首次加载时下载并缓存对应平台的 SQLite 原生库。SDK 与平台 Model 由 ShiroBot 宿主提供。
 
 ## 许可证
 

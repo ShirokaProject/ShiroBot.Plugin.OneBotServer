@@ -46,8 +46,8 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
             var registryPath = Path.IsPathRooted(config.Storage.MessageIdRegistryPath)
                 ? config.Storage.MessageIdRegistryPath
                 : Path.Combine(pluginDirectory, config.Storage.MessageIdRegistryPath);
-            var legacyNextId = await MessageIdRegistry.ReadNextIdAsync(config.LegacyMessageIdRegistryPath, runtimeToken).ConfigureAwait(false);
-            var messages = await MessageIdRegistry.OpenAsync(registryPath, config.Storage.RegistryMaxEntries, runtimeToken, legacyNextId).ConfigureAwait(false);
+            var messages = await MessageIdRegistry.OpenAsync(registryPath, config.Storage.RegistryMaxEntries, runtimeToken,
+                _selfId, config.LegacyMessageIdRegistryPath).ConfigureAwait(false);
             _state = new OneBotRuntimeState(messages, config.Storage.RegistryMaxEntries, config.Limits.EventQueueCapacity,
                 OneBotRuntimeState.DeriveRequestFlagKey(config.Storage.RequestFlagSecret, config.AccessToken));
             _actions = new OneBotActionDispatcher(context, _state);
@@ -139,7 +139,10 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         _heartbeatTask = null;
         _httpPosters = [];
         _actions = null;
+        var state = _state;
         _state = null;
+        try { state?.Dispose(); }
+        catch (Exception exception) { (errors ??= []).Add(exception); }
         _selfId = 0;
         foreach (var client in _httpClients)
         {

@@ -53,7 +53,7 @@ public sealed class GenericMessageConversionTests
         Directory.CreateDirectory(directory);
         try
         {
-            var registry = await MessageIdRegistry.OpenAsync(Path.Combine(directory, "ids.json"));
+            using var registry = await MessageIdRegistry.OpenAsync(Path.Combine(directory, "ids.json"));
             var reaction = new MessageReactionEvent { Platform = "custom", InstanceId = "one", SelfId = "1", Channel = Channel.Group("2"), Kind = "reaction", MessageId = "3", Emoji = new UnicodeReactionEmoji("👍"), IsAdded = true };
             var mapped = await OneBotEventMapper.MapAsync(reaction, new OneBotEventFormatConfig(), registry);
             Assert.AreEqual("group_msg_emoji_like", mapped.NoticeType);

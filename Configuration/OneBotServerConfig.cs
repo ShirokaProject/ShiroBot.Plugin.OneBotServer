@@ -120,7 +120,7 @@ public sealed record OneBotEventFormatConfig
 
 public sealed record OneBotStorageConfig
 {
-    [ConfigField("保存 OneBot 消息 ID 映射的文件路径，相对路径基于插件目录。", Label = "消息 ID 映射文件")]
+    [ConfigField("消息 ID 映射的存储路径，相对路径基于插件目录。SQLite 数据库存放在同目录，首次启动时导入旧 JSON。", Label = "消息 ID 映射文件")]
     public string MessageIdRegistryPath { get; init; } = "data/message-ids.json";
     [ConfigField("最多保留的消息 ID 映射数量。", Label = "映射条目上限")]
     public int RegistryMaxEntries { get; init; } = 100_000;

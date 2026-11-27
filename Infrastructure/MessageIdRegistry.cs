@@ -1,186 +1,237 @@
 using System.Text.Json;
+using SQLitePCL;
 
 namespace ShiroBot.Plugin.OneBotServer.Infrastructure;
 
 public enum MessageScene { Friend, Group, Temp }
 public sealed record OneBotMessageReference(MessageScene Scene, long PeerId, long Sequence);
 
-public sealed class MessageIdRegistry
+public sealed class MessageIdRegistry : IDisposable
 {
     private const int MaxMessageId = int.MaxValue;
-    private readonly string path;
+    private const string FindId = """
+        SELECT id FROM messages WHERE account_id = ?1 AND scene = ?2 AND peer_id = ?3 AND sequence = ?4
+        """;
+    private const string InsertMessage = """
+        INSERT INTO messages (id, account_id, scene, peer_id, sequence) VALUES (?1, ?2, ?3, ?4, ?5)
+        """;
+    private const string ReadNextId = "SELECT next_id FROM registry_state WHERE singleton = 1";
+    // SQLite assigns consecutive positions. Eviction removes only a prefix, so trimming can seek by rowid.
+    private const string Trim = """
+        DELETE FROM messages WHERE position <= (SELECT max(position) FROM messages) - ?1
+        """;
+
+    private readonly MessageIdDatabase database;
     private readonly int maxEntries;
+    private readonly long accountId;
     private readonly SemaphoreSlim gate = new(1, 1);
-    private readonly object stateLock = new();
-    private readonly Dictionary<int, OneBotMessageReference> byId = [];
-    private readonly Dictionary<OneBotMessageReference, int> byReference = [];
-    private readonly Queue<int> insertionOrder = [];
-    private int nextId = 1;
 
-    private readonly int minimumNextId;
-    private MessageIdRegistry(string path, int maxEntries, int minimumNextId) { this.path = path; this.maxEntries = maxEntries; this.minimumNextId = minimumNextId; }
-
-    public int Count { get { lock (stateLock) return byId.Count; } }
-    public static async Task<MessageIdRegistry> OpenAsync(string path, int maxEntries = 100_000, CancellationToken cancellationToken = default, int minimumNextId = 1)
+    private MessageIdRegistry(MessageIdDatabase database, int maxEntries, long accountId)
     {
-        if (maxEntries is < 1 or > MaxMessageId) throw new ArgumentOutOfRangeException(nameof(maxEntries));
-        if (minimumNextId is < 1 or > MaxMessageId) throw new ArgumentOutOfRangeException(nameof(minimumNextId));
-        var registry = new MessageIdRegistry(Path.GetFullPath(path), maxEntries, minimumNextId);
-        await registry.LoadAsync(cancellationToken);
-        return registry;
+        this.database = database;
+        this.maxEntries = maxEntries;
+        this.accountId = accountId;
     }
 
-    public static async Task<int> ReadNextIdAsync(string? path, CancellationToken cancellationToken = default)
+    public int Count
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return 1;
-        PersistedRegistry? persisted;
-        try { persisted = await ReadRegistryAsync(path, cancellationToken); }
-        catch (JsonException exception) { throw new InvalidDataException("Invalid legacy message ID registry JSON", exception); }
-        if (persisted is null || persisted.Version != 1 || persisted.NextId is < 1 or > MaxMessageId || persisted.Entries is null)
-            throw new InvalidDataException("Invalid legacy message ID registry format");
+        get
+        {
+            gate.Wait();
+            try { return (int)database.Scalar("SELECT count(*) FROM messages WHERE account_id = ?1", [accountId]); }
+            finally { gate.Release(); }
+        }
+    }
+
+    public static async Task<MessageIdRegistry> OpenAsync(
+        string path, int maxEntries = 100_000, CancellationToken cancellationToken = default,
+        long accountId = 0, string? sharedLegacyPath = null)
+    {
+        if (maxEntries < 1) throw new ArgumentOutOfRangeException(nameof(maxEntries));
+        cancellationToken.ThrowIfCancellationRequested();
+        var databasePath = GetDatabasePath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+        var database = MessageIdDatabase.Open(databasePath);
+        try
+        {
+            // Read JSON without holding a write lock. Another process may finish importing while we read it.
+            PersistedRegistry? legacy = null;
+            var legacyNextId = 1;
+            const string readVersion = "PRAGMA user_version";
+            if (database.Scalar(readVersion) == 0)
+            {
+                legacy = await ReadLegacyAsync(path, cancellationToken).ConfigureAwait(false);
+                if (legacy is null)
+                    legacyNextId = await ReadLegacyNextIdAsync(sharedLegacyPath, cancellationToken).ConfigureAwait(false);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            database.Execute("BEGIN IMMEDIATE");
+            var version = database.Scalar(readVersion);
+            if (version == 0)
+            {
+                database.ExecuteScript("""
+                    CREATE TABLE registry_state (
+                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                        next_id INTEGER NOT NULL CHECK (next_id BETWEEN 1 AND 2147483647));
+                    CREATE TABLE messages (
+                        position INTEGER PRIMARY KEY,
+                        id INTEGER NOT NULL UNIQUE CHECK (id BETWEEN 1 AND 2147483647), account_id INTEGER NOT NULL,
+                        scene INTEGER NOT NULL, peer_id INTEGER NOT NULL, sequence INTEGER NOT NULL,
+                        UNIQUE (account_id, scene, peer_id, sequence));
+                    PRAGMA user_version = 1;
+                    """);
+                database.Execute("INSERT INTO registry_state VALUES (1, ?1)", [legacy?.NextId ?? legacyNextId]);
+                if (legacy is not null)
+                {
+                    foreach (var entry in legacy.Entries.TakeLast(maxEntries))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var reference = new OneBotMessageReference(entry.Scene, entry.PeerId, entry.Sequence);
+                        Validate(reference);
+                        if (entry.Id < 1) throw new InvalidDataException("Invalid message ID registry entry");
+                        database.Execute(InsertMessage, [entry.Id, accountId, (int)reference.Scene, reference.PeerId, reference.Sequence]);
+                    }
+                }
+            }
+            else if (version != 1)
+            {
+                throw new InvalidDataException("Unsupported SQLite message ID registry version");
+            }
+
+            database.Execute(Trim, [maxEntries]);
+            cancellationToken.ThrowIfCancellationRequested();
+            database.Execute("COMMIT");
+            return new MessageIdRegistry(database, maxEntries, accountId);
+        }
+        catch
+        {
+            database.Dispose();
+            throw;
+        }
+    }
+
+    internal static string GetDatabasePath(string path)
+    {
+        path = Path.GetFullPath(path);
+        return path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            ? Path.ChangeExtension(path, ".sqlite3")
+            : path + ".sqlite3";
+    }
+
+    public bool TryResolve(int messageId, out OneBotMessageReference? reference)
+    {
+        gate.Wait();
+        try
+        {
+            reference = database.Read("""
+                SELECT scene, peer_id, sequence FROM messages WHERE id = ?1 AND account_id = ?2
+                """, [messageId, accountId], static row => new OneBotMessageReference(
+                (MessageScene)raw.sqlite3_column_int(row, 0), raw.sqlite3_column_int64(row, 1), raw.sqlite3_column_int64(row, 2)));
+            return reference is not null;
+        }
+        finally { gate.Release(); }
+    }
+
+    public bool TryGet(OneBotMessageReference reference, out int messageId)
+    {
+        gate.Wait();
+        try
+        {
+            messageId = GetId(reference);
+            return messageId != 0;
+        }
+        finally { gate.Release(); }
+    }
+
+    public async Task<int> RegisterAsync(OneBotMessageReference reference, CancellationToken cancellationToken = default)
+    {
+        Validate(reference);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var id = GetId(reference);
+            if (id != 0) return id;
+
+            database.Execute("BEGIN IMMEDIATE");
+            try
+            {
+                id = GetId(reference);
+                if (id == 0)
+                {
+                    id = (int)database.Scalar(ReadNextId);
+                    if (id == 0) throw new InvalidDataException("Missing SQLite message ID allocation cursor");
+                    var firstCandidate = id;
+                    while (database.Scalar("SELECT id FROM messages WHERE id = ?1", [id]) != 0)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        id = NextId(id);
+                        if (id == firstCandidate) throw new InvalidOperationException("OneBot message ID space is exhausted");
+                    }
+                    database.Execute(InsertMessage, [id, accountId, (int)reference.Scene, reference.PeerId, reference.Sequence]);
+                    database.Execute(Trim, [maxEntries]);
+                    database.Execute("UPDATE registry_state SET next_id = ?1 WHERE singleton = 1", [NextId(id)]);
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                database.Execute("COMMIT");
+                return id;
+            }
+            catch
+            {
+                database.Rollback();
+                throw;
+            }
+        }
+        finally { gate.Release(); }
+    }
+
+    private int GetId(OneBotMessageReference reference) =>
+        (int)database.Scalar(FindId, [accountId, (int)reference.Scene, reference.PeerId, reference.Sequence]);
+
+    private static int NextId(int current) => current == MaxMessageId ? 1 : current + 1;
+
+    public void Dispose()
+    {
+        gate.Wait();
+        try { database.Dispose(); }
+        finally { gate.Release(); }
+    }
+
+    private static async Task<int> ReadLegacyNextIdAsync(string? path, CancellationToken cancellationToken)
+    {
+        var persisted = await ReadLegacyAsync(path, cancellationToken).ConfigureAwait(false);
+        if (persisted is null) return 1;
+
         var historicalMax = 0;
         foreach (var entry in persisted.Entries)
         {
-            if (entry.Id is < 1 or > MaxMessageId) throw new InvalidDataException("Invalid legacy message ID registry entry");
+            if (entry.Id < 1) throw new InvalidDataException("Invalid legacy message ID registry entry");
             historicalMax = Math.Max(historicalMax, entry.Id);
         }
         return historicalMax < MaxMessageId ? Math.Max(persisted.NextId, historicalMax + 1) : persisted.NextId;
     }
 
-    public bool TryResolve(int messageId, out OneBotMessageReference? reference) { lock (stateLock) return byId.TryGetValue(messageId, out reference); }
-    public bool TryGet(OneBotMessageReference reference, out int messageId) { lock (stateLock) return byReference.TryGetValue(reference, out messageId); }
-
-    public async Task<int> RegisterAsync(OneBotMessageReference reference, CancellationToken cancellationToken = default)
+    private static async Task<PersistedRegistry?> ReadLegacyAsync(string? path, CancellationToken cancellationToken)
     {
-        Validate(reference);
-        await gate.WaitAsync(cancellationToken);
-        try
-        {
-            lock (stateLock)
-            {
-                if (byReference.TryGetValue(reference, out var existing)) return existing;
-            }
-
-            int nextCandidate;
-            int id;
-            bool evictOldest;
-            lock (stateLock)
-            {
-                (id, nextCandidate) = Allocate(byId, nextId);
-                evictOldest = byId.Count >= maxEntries;
-            }
-
-            // The gate serializes writers. Readers continue to see the previous
-            // committed state until the atomic replacement succeeds.
-            await PersistAsync(byId, insertionOrder, nextCandidate, cancellationToken,
-                new KeyValuePair<int, OneBotMessageReference>(id, reference), evictOldest);
-            lock (stateLock)
-            {
-                if (evictOldest)
-                {
-                    var expired = insertionOrder.Dequeue();
-                    byReference.Remove(byId[expired]);
-                    byId.Remove(expired);
-                }
-                byId.Add(id, reference);
-                byReference.Add(reference, id);
-                insertionOrder.Enqueue(id);
-                nextId = nextCandidate;
-            }
-            return id;
-        }
-        finally { gate.Release(); }
-    }
-
-    private static (int Id, int NextId) Allocate(IReadOnlyDictionary<int, OneBotMessageReference> entries, int firstCandidate)
-    {
-        var candidate = firstCandidate;
-        for (var attempts = 0; attempts <= entries.Count; attempts++)
-        {
-            var current = candidate;
-            candidate = current == MaxMessageId ? 1 : current + 1;
-            if (!entries.ContainsKey(current)) return (current, candidate);
-        }
-        throw new InvalidOperationException("OneBot message ID space is exhausted");
-    }
-
-    private async Task LoadAsync(CancellationToken cancellationToken)
-    {
-        if (!File.Exists(path))
-        {
-            nextId = minimumNextId;
-            if (minimumNextId > 1) await PersistAsync(byId, insertionOrder, nextId, cancellationToken);
-            return;
-        }
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
         PersistedRegistry? persisted;
-        try { persisted = await ReadRegistryAsync(path, cancellationToken); }
-        catch (JsonException exception) { throw new InvalidDataException("Invalid message ID registry JSON", exception); }
-        if (persisted is null || persisted.Version != 1 || persisted.NextId is < 1 or > MaxMessageId || persisted.Entries is null) throw new InvalidDataException("Invalid message ID registry format");
-        foreach (var entry in persisted.Entries.TakeLast(maxEntries))
-        {
-            var reference = new OneBotMessageReference(entry.Scene, entry.PeerId, entry.Sequence);
-            Validate(reference);
-            if (entry.Id is < 1 or > MaxMessageId || !byId.TryAdd(entry.Id, reference) || !byReference.TryAdd(reference, entry.Id)) throw new InvalidDataException("Duplicate or invalid message ID registry entry");
-            insertionOrder.Enqueue(entry.Id);
-        }
-        nextId = persisted.NextId;
-    }
-
-    private static async Task<PersistedRegistry?> ReadRegistryAsync(string file, CancellationToken cancellationToken)
-    {
-        await using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read,
-            16384, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return await JsonSerializer.DeserializeAsync<PersistedRegistry>(stream, cancellationToken: cancellationToken);
-    }
-
-    private async Task PersistAsync(IReadOnlyDictionary<int, OneBotMessageReference> entries, IEnumerable<int> order,
-        int candidate, CancellationToken cancellationToken,
-        KeyValuePair<int, OneBotMessageReference>? added = null, bool skipOldest = false)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
-                FileShare.None, 16384, FileOptions.Asynchronous | FileOptions.SequentialScan))
-            {
-                using var writer = new Utf8JsonWriter(stream);
-                writer.WriteStartObject();
-                writer.WriteNumber("Version", 1);
-                writer.WriteNumber("NextId", candidate);
-                writer.WriteStartArray("Entries");
-                var index = 0;
-                foreach (var messageId in order)
-                {
-                    if (skipOldest) { skipOldest = false; continue; }
-                    WriteEntry(writer, messageId, entries[messageId]);
-                    if (++index % 64 == 0) await writer.FlushAsync(cancellationToken);
-                }
-                if (added is { } item) WriteEntry(writer, item.Key, item.Value);
-                writer.WriteEndArray();
-                writer.WriteEndObject();
-                await writer.FlushAsync(cancellationToken);
-                stream.Flush(flushToDisk: true);
-            }
-            cancellationToken.ThrowIfCancellationRequested();
-            File.Move(temporary, path, overwrite: true);
+            await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+                16384, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            persisted = await JsonSerializer.DeserializeAsync<PersistedRegistry>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
-        finally { if (File.Exists(temporary)) File.Delete(temporary); }
-    }
+        catch (JsonException exception) { throw new InvalidDataException("Invalid legacy message ID registry JSON", exception); }
 
-    private static void WriteEntry(Utf8JsonWriter writer, int id, OneBotMessageReference reference)
-    {
-        writer.WriteStartObject();
-        writer.WriteNumber("Id", id);
-        writer.WriteNumber("Scene", (int)reference.Scene);
-        writer.WriteNumber("PeerId", reference.PeerId);
-        writer.WriteNumber("Sequence", reference.Sequence);
-        writer.WriteEndObject();
+        if (persisted is not { Version: 1, NextId: > 0, Entries: not null })
+            throw new InvalidDataException("Invalid legacy message ID registry format");
+        return persisted;
     }
 
     private static void Validate(OneBotMessageReference reference)
     {
-        if (reference.PeerId < 0 || reference.Sequence < 0) throw new ArgumentOutOfRangeException(nameof(reference), "Message reference values must be non-negative");
+        if (reference.PeerId < 0 || reference.Sequence < 0)
+            throw new ArgumentOutOfRangeException(nameof(reference), "Message reference values must be non-negative");
     }
 
     private sealed record PersistedRegistry(int Version, int NextId, PersistedEntry[] Entries);

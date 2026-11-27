@@ -45,10 +45,13 @@ public sealed class OneBotRuntimeAndServiceTests
         }, config.EventFormat, CancellationToken.None);
         await runtime.StopAsync(CancellationToken.None);
 
-        var registry = await Infrastructure.MessageIdRegistry.OpenAsync(Path.Combine(directory, "data", "message-ids.json"), 10);
-        Assert.AreEqual(1, facade.SelfIdCalls);
-        Assert.IsTrue(registry.TryGet(new(Infrastructure.MessageScene.Group, 77, 88), out var messageId));
-        Assert.AreEqual(1, messageId);
+        using (var registry = await Infrastructure.MessageIdRegistry.OpenAsync(
+            Path.Combine(directory, "data", "message-ids.json"), 10, accountId: 10001))
+        {
+            Assert.AreEqual(1, facade.SelfIdCalls);
+            Assert.IsTrue(registry.TryGet(new(Infrastructure.MessageScene.Group, 77, 88), out var messageId));
+            Assert.AreEqual(1, messageId);
+        }
         Directory.Delete(directory, recursive: true);
     }
 

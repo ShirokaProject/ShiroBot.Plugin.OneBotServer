@@ -181,7 +181,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade { StoragePath = directory };
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var sourceId = await state.Messages.RegisterAsync(new(MessageScene.Group, 8, 9));
         state.Reactions.Update(8, 9, "475", 2, true);
         var dispatcher = new OneBotActionDispatcher(facade, state);
@@ -200,6 +200,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual(2L, facade.ForwardNodes.Single().UserId);
         Assert.AreEqual((new OneBotMessageReference(MessageScene.Group, 8, 9), Channel.Direct("5")), facade.SingleForward);
         Assert.AreEqual("2", JsonSerializer.SerializeToElement(reactions.Data).GetProperty("emojiLikesList")[0].GetProperty("tinyId").GetString());
+        state.Dispose();
         Directory.Delete(directory, recursive: true);
     }
 
@@ -307,7 +308,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var dispatcher = new OneBotActionDispatcher(facade, state);
         var messageId = await state.Messages.RegisterAsync(new(MessageScene.Group, 1, 3));
         var friendFlag = RequestFlagCodec.Encode(new RequestFlag("friend", InitiatorUid: "123"), state.RequestFlagKey);
@@ -327,6 +328,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual((1L, 3L, "4", true), facade.Reaction);
         Assert.AreEqual((1L, "2"), facade.Announcement);
         Assert.AreEqual((1L, 3L, true), facade.Essence);
+        state.Dispose();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
 
@@ -337,7 +339,7 @@ public sealed class OneBotActionDispatcherTests
         try
         {
             var facade = new RecordingFacade();
-            var state = await CreateStateAsync(directory);
+            using var state = await CreateStateAsync(directory);
             var dispatcher = new OneBotActionDispatcher(facade, state);
             var messageId = await state.Messages.RegisterAsync(new(MessageScene.Group, 12, 34));
             var privateMessageId = await state.Messages.RegisterAsync(new(MessageScene.Friend, 12, 34));
@@ -404,7 +406,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var dispatcher = new OneBotActionDispatcher(facade, state);
         state.GroupFiles.Remember("/group-file", new GroupFileReference(915449089, "283622490.json", 929603));
         state.Files.Remember("/private-file", new PrivateFileReference(20002, "hash", false));
@@ -422,6 +424,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual("https://example.test/group", payload.GetProperty("url").GetString());
         Assert.AreEqual("283622490.json", payload.GetProperty("file_name").GetString());
         Assert.AreEqual("929603", payload.GetProperty("file_size").GetString());
+        state.Dispose();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
 
@@ -449,12 +452,12 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var dispatcher = new OneBotActionDispatcher(facade, state);
 
         var sent = await dispatcher.DispatchAsync(Request("send_private_msg", """{"user_id":9,"message":"hello"}"""));
         var messageId = JsonSerializer.SerializeToElement(sent.Data).GetProperty("message_id").GetInt32();
-        var reopened = await MessageIdRegistry.OpenAsync(Path.Combine(directory, "ids.json"));
+        using var reopened = await MessageIdRegistry.OpenAsync(Path.Combine(directory, "ids.json"));
         var restarted = new OneBotActionDispatcher(facade, new OneBotRuntimeState(reopened, 100, 10, state.RequestFlagKey));
         await restarted.DispatchAsync(Request("delete_msg", $$"""{"message_id":{{messageId}}}"""));
         await restarted.DispatchAsync(Request("get_msg", $$"""{"message_id":"{{messageId}}"}"""));
@@ -462,6 +465,8 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual(Channel.Direct("9"), facade.DeleteChannel);
         Assert.AreEqual(Channel.Direct("9"), facade.GetChannel);
         Assert.AreEqual("99", facade.DeletedMessageId);
+        reopened.Dispose();
+        state.Dispose();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
 
@@ -502,7 +507,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var dispatcher = new OneBotActionDispatcher(facade, state);
         await state.Events.FetchAsync("test", TimeSpan.Zero);
         state.Events.Push(new() { Time = 1, SelfId = 2, PostType = "notice" });
@@ -521,6 +526,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual("8", facade.DeletedMessageId);
         Assert.AreEqual(Channel.Group("7"), facade.DeleteChannel);
         Assert.AreEqual("ok", ((TextSegment)facade.Messages.Single().Single()).Text);
+        state.Dispose();
         Directory.Delete(directory, recursive: true);
     }
 
@@ -529,7 +535,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         var dispatcher = new OneBotActionDispatcher(facade, state);
         var friend = RequestFlagCodec.Encode(new RequestFlag("friend", InitiatorUid: "uid"), state.RequestFlagKey);
         var group = RequestFlagCodec.Encode(new RequestFlag("group", 10, 20, RequestType: "join_request"), state.RequestFlagKey);
@@ -544,6 +550,7 @@ public sealed class OneBotActionDispatcherTests
         Assert.AreEqual(0, invitationResponse.RetCode);
         Assert.AreEqual("uid", facade.FriendRequest.Item1);
         Assert.AreEqual(new RequestFlag("invitation", 11, 21), facade.GroupRequest);
+        state.Dispose();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
 
@@ -552,7 +559,7 @@ public sealed class OneBotActionDispatcherTests
     {
         var directory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var facade = new RecordingFacade();
-        var state = await CreateStateAsync(directory);
+        using var state = await CreateStateAsync(directory);
         state.Files.Remember("file", new PrivateFileReference(12, "hash", true));
         var dispatcher = new OneBotActionDispatcher(facade, state);
 
@@ -560,6 +567,7 @@ public sealed class OneBotActionDispatcherTests
 
         Assert.AreEqual(0, response.RetCode);
         Assert.AreEqual((12L, "file", "hash", true), facade.PrivateFile);
+        state.Dispose();
         if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
     }
 

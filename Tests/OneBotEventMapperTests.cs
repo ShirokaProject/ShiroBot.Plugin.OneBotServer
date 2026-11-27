@@ -74,7 +74,7 @@ public sealed class OneBotEventMapperTests
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "ids.json");
         try
         {
-            var registry = await MessageIdRegistry.OpenAsync(path);
+            using var registry = await MessageIdRegistry.OpenAsync(path);
 
             var mapped = await OneBotEventMapper.MapAsync(message, Format, registry);
 
@@ -175,7 +175,7 @@ public sealed class OneBotEventMapperTests
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "ids.json");
         try
         {
-            var registry = await MessageIdRegistry.OpenAsync(path);
+            using var registry = await MessageIdRegistry.OpenAsync(path);
             var recall = await OneBotEventMapper.MapAsync(Platform(new QMessageRecall
             {
                 Time = time, SelfId = "10001", Scene = QMessageScene.Group, PeerId = "10", MessageId = "20", SenderId = "30", OperatorId = "40"
@@ -294,7 +294,7 @@ public sealed class OneBotEventMapperTests
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "ids.json");
         try
         {
-            var registry = await MessageIdRegistry.OpenAsync(path);
+            using var registry = await MessageIdRegistry.OpenAsync(path);
             var message = new MessageEvent
             {
                 Platform = "qq", SelfId = "1", MessageId = "20", Channel = Channel.Group("10"),
