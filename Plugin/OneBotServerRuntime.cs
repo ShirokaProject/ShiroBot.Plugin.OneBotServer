@@ -33,6 +33,7 @@ public sealed class OneBotServerRuntime(IOneBotContextFacade context, string plu
         ArgumentNullException.ThrowIfNull(config);
         if (_runtimeCancellation is not null) throw new InvalidOperationException("The OneBot runtime is already started.");
         if (config.Port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(config), "Port must be between 1 and 65535.");
+        if (config.Limits.EventQueueCapacity < 1) throw new ArgumentOutOfRangeException(nameof(config), "Event queue capacity must be positive.");
         if (config.Heartbeat.Enabled && config.Heartbeat.IntervalSeconds < 1) throw new ArgumentOutOfRangeException(nameof(config), "Heartbeat interval must be positive.");
         if (config.ReverseWebSocket.ReconnectDelaySeconds < 0) throw new ArgumentOutOfRangeException(nameof(config), "Reconnect delay cannot be negative.");
         if (config.HttpTargets.Any(target => target.TimeoutSeconds < 1)) throw new ArgumentOutOfRangeException(nameof(config), "HTTP target timeout must be positive.");
