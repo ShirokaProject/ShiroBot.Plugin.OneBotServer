@@ -1,5 +1,4 @@
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 
@@ -66,10 +65,12 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
         }
     }
 
-    public async Task<JsonElement?> ReceiveAsync(CancellationToken cancellationToken)
+    public async Task<WebSocketMediaFrame?> ReceiveAsync(CancellationToken cancellationToken)
     {
         var buffer = new byte[16 * 1024];
-        await using var stream = new MemoryStream();
+        using var reader = new WebSocketMediaFrameReader();
+        JsonException? invalidJson = null;
+        long receivedBytes = 0;
         WebSocketReceiveResult result;
         do
         {
@@ -81,18 +82,30 @@ internal sealed class OneBotWebSocketConnection : IAsyncDisposable
                 return null;
             }
             if (result.MessageType != WebSocketMessageType.Text) throw new OneBotActionException(400, 1400, "WebSocket frames must be text");
-            if (maxMessageBytes > 0 && stream.Length + result.Count > maxMessageBytes)
+            receivedBytes += result.Count;
+            if (maxMessageBytes > 0 && receivedBytes > maxMessageBytes)
             {
                 await socket.CloseOutputAsync(WebSocketCloseStatus.MessageTooBig, "WebSocket message is too large", cancellationToken).ConfigureAwait(false);
                 LastCloseStatus = WebSocketCloseStatus.MessageTooBig;
                 LastCloseDescription = "WebSocket message is too large";
                 return null;
             }
-            await stream.WriteAsync(buffer.AsMemory(0, result.Count), cancellationToken).ConfigureAwait(false);
+            if (invalidJson is null)
+            {
+                try
+                {
+                    reader.Write(buffer.AsSpan(0, result.Count));
+                }
+                catch (JsonException exception)
+                {
+                    // Drain the invalid message before reading the next action.
+                    invalidJson = exception;
+                }
+            }
         } while (!result.EndOfMessage);
 
-        using var document = JsonDocument.Parse(stream.ToArray());
-        return document.RootElement.Clone();
+        if (invalidJson is not null) throw invalidJson;
+        return reader.Complete();
     }
 
     public async ValueTask DisposeAsync()

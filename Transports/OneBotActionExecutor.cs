@@ -13,6 +13,9 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
     private readonly SemaphoreSlim mediaSlots = new(MediaConcurrency, MediaConcurrency);
     // Long merged forwards can use all but one media slot.
     private readonly SemaphoreSlim forwardSlots = new(MediaConcurrency - 1, MediaConcurrency - 1);
+    // Media actions beyond the running slots wait instead of failing; the cap bounds payloads held while queued.
+    private const int MediaQueueCapacity = 16;
+    private int mediaWaiting;
 
     internal OneBotActionExecutor(IOneBotActionHandler actions)
         : this(actions, DefaultActionTimeout, DefaultMediaTimeout)
@@ -29,7 +32,7 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
         action.StartsWith("download_file", StringComparison.OrdinalIgnoreCase) ||
         action.StartsWith(".handle_quick_operation", StringComparison.OrdinalIgnoreCase);
 
-    internal async Task<OneBotResponse<object?>> ExecuteAsync(OneBotActionRequest request, CancellationToken connectionToken)
+    internal async Task<OneBotResponse<object?>> ExecuteAsync(OneBotActionRequest request, CancellationToken connectionToken, WebSocketMediaFrame? frame = null)
     {
         connectionToken.ThrowIfCancellationRequested();
         var isMedia = IsMediaAction(request.Action);
@@ -37,11 +40,13 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
         var deadline = isMedia ? mediaTimeout : actionTimeout;
         var forwardSlot = request.Action is "send_group_forward_msg" or "send_private_forward_msg" or "send_forward_msg"
             ? forwardSlots : null;
-        if (forwardSlot is not null && !forwardSlot.Wait(0))
-            return OneBotResponse<object?>.Failed(1500, "too many merged forwards are still running");
-        if (!slots.Wait(0))
+        if (isMedia)
         {
-            forwardSlot?.Release();
+            var rejection = await AcquireMediaSlotsAsync(forwardSlot, deadline, connectionToken).ConfigureAwait(false);
+            if (rejection is not null) return rejection;
+        }
+        else if (!slots.Wait(0))
+        {
             return OneBotResponse<object?>.Failed(1500, "too many actions are still running");
         }
 
@@ -51,9 +56,11 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
         if (activity is not null)
             BotLog.Log($"[OneBot] trace={activity.TraceId} media start action={request.Action}");
         // Offload the call itself so a handler that blocks before returning a Task can still time out.
+        frame?.Retain();
         var execution = Task.Run(() =>
         {
             actionCancellation.Token.ThrowIfCancellationRequested();
+            OneBotRequestFrame.Current = frame;
             return actions.HandleAsync(request, actionCancellation.Token);
         });
         try
@@ -76,12 +83,58 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
         }
         finally
         {
-            _ = ReleaseActionSlotAsync(execution, actionCancellation, slots, forwardSlot);
+            _ = ReleaseActionSlotAsync(execution, actionCancellation, slots, forwardSlot, frame);
         }
     }
 
+    private async Task<OneBotResponse<object?>?> AcquireMediaSlotsAsync(SemaphoreSlim? forwardSlot, TimeSpan wait,
+        CancellationToken connectionToken)
+    {
+        var forwardHeld = forwardSlot is null || forwardSlot.Wait(0);
+        if (forwardHeld && mediaSlots.Wait(0)) return null;
+        if (Interlocked.Increment(ref mediaWaiting) > MediaQueueCapacity)
+        {
+            Interlocked.Decrement(ref mediaWaiting);
+            if (forwardSlot is not null && forwardHeld) forwardSlot.Release();
+            return Busy(forwardSlot is not null && !forwardHeld);
+        }
+
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(connectionToken);
+            timeout.CancelAfter(wait);
+            try
+            {
+                if (!forwardHeld)
+                {
+                    await forwardSlot!.WaitAsync(timeout.Token).ConfigureAwait(false);
+                    forwardHeld = true;
+                }
+                await mediaSlots.WaitAsync(timeout.Token).ConfigureAwait(false);
+                return null;
+            }
+            catch (OperationCanceledException) when (!connectionToken.IsCancellationRequested)
+            {
+                if (forwardSlot is not null && forwardHeld) forwardSlot.Release();
+                return Busy(forwardSlot is not null && !forwardHeld);
+            }
+            catch
+            {
+                if (forwardSlot is not null && forwardHeld) forwardSlot.Release();
+                throw;
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref mediaWaiting);
+        }
+
+        static OneBotResponse<object?> Busy(bool forward) => OneBotResponse<object?>.Failed(1500,
+            forward ? "too many merged forwards are still running" : "too many actions are still running");
+    }
+
     private static async Task ReleaseActionSlotAsync(Task execution, CancellationTokenSource actionCancellation,
-        SemaphoreSlim slots, SemaphoreSlim? forwardSlots)
+        SemaphoreSlim slots, SemaphoreSlim? forwardSlots, WebSocketMediaFrame? frame)
     {
         try
         {
@@ -98,6 +151,7 @@ internal sealed class OneBotActionExecutor(IOneBotActionHandler actions, TimeSpa
             actionCancellation.Dispose();
             slots.Release();
             forwardSlots?.Release();
+            frame?.Dispose();
         }
     }
 }

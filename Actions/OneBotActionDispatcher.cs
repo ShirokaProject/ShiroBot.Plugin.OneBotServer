@@ -100,7 +100,12 @@ public sealed class OneBotActionDispatcher : IOneBotActionHandler, IOneBotQuickO
             var slots = normalized.RateLimited ? _rateLimitedQueueSlots : _backgroundSlots;
             if (!slots.Wait(0))
                 return OneBotResponse<object?>.Failed(1500, "too many background actions", request.Echo);
-            var operation = (CancellationToken token) => InvokeAsync(normalized.Action, request.Params, token);
+            // The request's JSON and temporary media files belong to the transport frame; keep them until the work ends.
+            var held = OneBotRequestFrame.Hold();
+            var operation = async (CancellationToken token) =>
+            {
+                using (held) return await InvokeAsync(normalized.Action, request.Params, token).ConfigureAwait(false);
+            };
             _ = normalized.RateLimited ? EnqueueRateLimited(operation) : Task.Run(() => RunBackground(operation, slots));
             return new OneBotResponse<object?>("async", 1, null, Echo: request.Echo);
         }

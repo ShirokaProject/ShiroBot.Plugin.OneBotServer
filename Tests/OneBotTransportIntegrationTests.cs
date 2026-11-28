@@ -101,7 +101,8 @@ public sealed class OneBotTransportIntegrationTests
         await using var server = await OneBotKestrelServer.StartAsync(
             new OneBotServerOptions(["http://127.0.0.1:0"], "10001", MaxRequestBodyBytes: 0), handler);
         using var client = CreateClient(server);
-        var blob = new string('x', 64 * 1024);
+        // Larger than Kestrel's 30 MB default request body limit.
+        var blob = new string('x', 32 * 1024 * 1024);
         using var response = await client.PostAsync(
             "get_status",
             new StringContent(JsonSerializer.Serialize(new { blob }), Encoding.UTF8, "application/json"));
@@ -109,6 +110,84 @@ public sealed class OneBotTransportIntegrationTests
         Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
         Assert.AreEqual("get_status", handler.LastRequest?.Action);
         Assert.AreEqual(blob.Length, handler.LastRequest!.Params["blob"].GetString()!.Length);
+    }
+
+    [TestMethod]
+    public async Task HttpApi_StreamsBase64MediaToTemporaryFileForTheAction()
+    {
+        var media = new byte[3 * 1024 * 1024 + 7];
+        new Random(7).NextBytes(media);
+        string? path = null;
+        byte[]? received = null;
+        var handler = new DelegateOneBotActionHandler((request, _) =>
+        {
+            var file = request.Params["message"][0].GetProperty("data").GetProperty("file").GetString()!;
+            path = new Uri(file).LocalPath;
+            received = File.ReadAllBytes(path);
+            return Task.FromResult(OneBotResponse<object?>.Ok(null, request.Echo));
+        });
+        await using var server = await OneBotKestrelServer.StartAsync(
+            new OneBotServerOptions(["http://127.0.0.1:0"], "10001"), handler);
+        using var client = CreateClient(server);
+        var body = JsonSerializer.Serialize(new
+        {
+            group_id = 1,
+            message = new[] { new { type = "image", data = new { file = "base64://" + Convert.ToBase64String(media) } } },
+        });
+        using var response = await client.PostAsync("send_group_msg", new StringContent(body, Encoding.UTF8, "application/json"));
+
+        Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+        StringAssert.Contains(await response.Content.ReadAsStringAsync(), "\"status\":\"ok\"");
+        CollectionAssert.AreEqual(media, received);
+        Assert.IsFalse(File.Exists(path), "The temporary media file should be removed after the action.");
+    }
+
+    [TestMethod]
+    public async Task AsyncAction_KeepsStreamedMediaUntilBackgroundWorkFinishes()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var media = new byte[256 * 1024 + 3];
+        new Random(11).NextBytes(media);
+        var facade = new GatedSendFacade();
+        await using var server = await OneBotKestrelServer.StartAsync(
+            new OneBotServerOptions(["http://127.0.0.1:0"], "10001"), new ShiroBot.Plugin.OneBotServer.Actions.OneBotActionDispatcher(facade));
+        using var client = CreateClient(server);
+        var body = JsonSerializer.Serialize(new
+        {
+            group_id = 1,
+            message = new[] { new { type = "image", data = new { file = "base64://" + Convert.ToBase64String(media) } } },
+        });
+        using var response = await client.PostAsync("send_group_msg_async", new StringContent(body, Encoding.UTF8, "application/json"), timeout.Token);
+        StringAssert.Contains(await response.Content.ReadAsStringAsync(timeout.Token), "\"status\":\"async\"");
+
+        // The HTTP action has completed; the background send must still see the media file.
+        facade.Gate.TrySetResult();
+        CollectionAssert.AreEqual(media, await facade.Received.Task.WaitAsync(timeout.Token));
+    }
+
+    private sealed class GatedSendFacade : ShiroBot.Plugin.OneBotServer.Bridges.OneBotContextFacadeBase
+    {
+        public TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<byte[]> Received { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task<string> SendAsync(ShiroBot.SDK.Models.Channel channel,
+            IReadOnlyList<ShiroBot.SDK.Models.MessageSegment> message, CancellationToken cancellationToken = default)
+        {
+            await Gate.Task.WaitAsync(cancellationToken);
+            try
+            {
+                var file = message.SelectMany(segment => segment.GetType().GetProperties()
+                        .Where(property => property.PropertyType == typeof(string) && property.GetIndexParameters().Length == 0)
+                        .Select(property => property.GetValue(segment) as string))
+                    .First(value => value?.StartsWith("file://", StringComparison.Ordinal) == true)!;
+                Received.TrySetResult(await File.ReadAllBytesAsync(new Uri(file).LocalPath, cancellationToken));
+            }
+            catch (Exception exception)
+            {
+                Received.TrySetException(exception);
+            }
+            return "1";
+        }
     }
 
     [TestMethod]
@@ -230,6 +309,35 @@ public sealed class OneBotTransportIntegrationTests
         Assert.AreEqual(9, response.RootElement.GetProperty("echo").GetInt32());
         Assert.AreEqual(blob.Length, handler.LastRequest!.Params["blob"].GetString()!.Length);
         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, CancellationToken.None);
+    }
+
+    [TestMethod]
+    public async Task ForwardWebSocket_RecoversAfterMalformedMediaInFragmentedMessage()
+    {
+        var handler = new RecordingActionHandler();
+        await using var server = await OneBotKestrelServer.StartAsync(
+            new OneBotServerOptions(["http://127.0.0.1:0"], "10001"), handler);
+        using var socket = new ClientWebSocket();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var endpoint = new Uri(server.Addresses.Single().Replace("http://", "ws://", StringComparison.Ordinal) + "/api");
+        await socket.ConnectAsync(endpoint, timeout.Token);
+
+        var invalidStart = Encoding.UTF8.GetBytes("""{"action":"send_msg","params":{"message":{"type":"image","data":{"file":"base64://!""" +
+            new string('!', 16 * 1024));
+        await socket.SendAsync(invalidStart, WebSocketMessageType.Text, false, timeout.Token);
+        await socket.SendAsync(Encoding.UTF8.GetBytes("\"}}}}"), WebSocketMessageType.Text, true, timeout.Token);
+        using var invalid = await ReceiveJsonAsync(socket);
+        Assert.AreEqual(1400, invalid.RootElement.GetProperty("retcode").GetInt32());
+        Assert.IsNull(handler.LastRequest);
+
+        var valid = """{"action":"send_msg","params":{"message":{"type":"image","data":{"file":"base64://AQID"}}},"echo":17}"""u8.ToArray();
+        await socket.SendAsync(valid, WebSocketMessageType.Text, true, timeout.Token);
+        using var accepted = await ReceiveJsonAsync(socket);
+        Assert.AreEqual(0, accepted.RootElement.GetProperty("retcode").GetInt32());
+        Assert.AreEqual(17, accepted.RootElement.GetProperty("echo").GetInt32());
+        var path = handler.LastRequest!.Params["message"].GetProperty("data").GetProperty("file").GetString();
+        Assert.IsTrue(new Uri(path!).IsFile);
+        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, timeout.Token);
     }
 
     [DataTestMethod]
@@ -431,9 +539,12 @@ public sealed class OneBotTransportIntegrationTests
 
         Assert.AreEqual(0, (await executor.ExecuteAsync(query, timeout.Token)).RetCode);
         Assert.IsTrue(running.All(task => !task.IsCompleted));
-        StringAssert.Contains((await executor.ExecuteAsync(media, timeout.Token)).Message, "still running");
+        var queued = executor.ExecuteAsync(media, timeout.Token);
+        await Task.Delay(100, timeout.Token);
+        Assert.IsFalse(queued.IsCompleted, "A fifth media action should wait for a slot instead of failing.");
         foreach (var result in await Task.WhenAll(running).WaitAsync(timeout.Token))
             StringAssert.Contains(result.Message, "timed out");
+        Assert.AreNotEqual(0, (await queued.WaitAsync(timeout.Token)).RetCode);
 
         var subsequent = media with { Action = "send_group_forward_msg" };
         OneBotResponse<object?> response;
@@ -467,16 +578,46 @@ public sealed class OneBotTransportIntegrationTests
         try
         {
             await started.Task.WaitAsync(timeout.Token);
-            StringAssert.Contains((await executor.ExecuteAsync(forward, timeout.Token)).Message, "merged forwards");
+            var queuedForward = executor.ExecuteAsync(forward, timeout.Token);
             Assert.AreEqual(0, (await executor.ExecuteAsync(image, timeout.Token)).RetCode);
             Assert.IsTrue(running.All(task => !task.IsCompleted));
+            Assert.IsFalse(queuedForward.IsCompleted, "A fourth merged forward should wait for a forward slot.");
+            running = [.. running, queuedForward];
         }
         finally
         {
             release.TrySetResult();
             await Task.WhenAll(running);
         }
+        Assert.IsTrue(running.All(task => task.Result.RetCode == 0));
         Assert.AreEqual(0, (await executor.ExecuteAsync(forward, timeout.Token)).RetCode);
+    }
+
+    [TestMethod]
+    public async Task MediaActions_QueueForSlotsAndRejectOnlyWhenQueueIsFull()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = 0;
+        var handler = new DelegateOneBotActionHandler(async (request, token) =>
+        {
+            Interlocked.Increment(ref entered);
+            await release.Task.WaitAsync(token);
+            return OneBotResponse<object?>.Ok(null, request.Echo);
+        });
+        var executor = new OneBotActionExecutor(handler);
+        var media = new OneBotActionRequest("upload_group_file", new Dictionary<string, JsonElement>(), null);
+        // 4 running + 16 queued fit; the 21st exceeds the queue.
+        var accepted = Enumerable.Range(0, 20).Select(_ => executor.ExecuteAsync(media, timeout.Token)).ToArray();
+        while (Volatile.Read(ref entered) < 4) await Task.Delay(10, timeout.Token);
+        await Task.Delay(100, timeout.Token);
+        Assert.AreEqual(4, Volatile.Read(ref entered));
+        StringAssert.Contains((await executor.ExecuteAsync(media, timeout.Token)).Message, "still running");
+
+        release.TrySetResult();
+        foreach (var result in await Task.WhenAll(accepted).WaitAsync(timeout.Token))
+            Assert.AreEqual(0, result.RetCode);
+        Assert.AreEqual(20, Volatile.Read(ref entered));
     }
 
     private static HttpClient CreateClient(OneBotKestrelServer server)
@@ -541,7 +682,8 @@ public sealed class OneBotTransportIntegrationTests
 
         public Task<OneBotResponse<object?>> HandleAsync(OneBotActionRequest request, CancellationToken cancellationToken)
         {
-            LastRequest = request;
+            // Request JSON is only valid for the duration of the action; keep a copy for assertions.
+            LastRequest = request with { Params = request.Params.ToDictionary(pair => pair.Key, pair => pair.Value.Clone()), Echo = request.Echo?.Clone() };
             return Task.FromResult(Response(request));
         }
     }

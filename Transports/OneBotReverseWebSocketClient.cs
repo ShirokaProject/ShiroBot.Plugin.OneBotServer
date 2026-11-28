@@ -114,7 +114,7 @@ public sealed class OneBotReverseWebSocketClient
                 await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), connectionToken).ConfigureAwait(false);
             while (connection.IsOpen && !connectionToken.IsCancellationRequested)
             {
-                JsonElement? frame;
+                WebSocketMediaFrame? frame;
                 try
                 {
                     frame = await connection.ReceiveAsync(connectionToken).ConfigureAwait(false);
@@ -130,8 +130,12 @@ public sealed class OneBotReverseWebSocketClient
                     BotLog.Warning($"[OneBot/ReverseWS] 对端关闭 {SafeEndpoint()}，status={connection.LastCloseStatus?.ToString() ?? "unknown"}，reason={connection.LastCloseDescription ?? "none"}。");
                     return;
                 }
-                if (!OneBotTransportProtocol.CanReceiveActions(options.Role)) continue;
-                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleActionAsync(connection, frame.Value, connectionToken)).ConfigureAwait(false);
+                if (!OneBotTransportProtocol.CanReceiveActions(options.Role))
+                {
+                    frame.Dispose();
+                    continue;
+                }
+                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleActionAsync(connection, frame, connectionToken)).ConfigureAwait(false);
             }
         }
         finally
@@ -162,8 +166,10 @@ public sealed class OneBotReverseWebSocketClient
         }
     }
 
-    private async Task HandleActionAsync(OneBotWebSocketConnection connection, JsonElement frame, CancellationToken cancellationToken)
+    private async Task HandleActionAsync(OneBotWebSocketConnection connection, WebSocketMediaFrame received, CancellationToken cancellationToken)
     {
+        using var ownedFrame = received;
+        var frame = ownedFrame.Root;
         var stopwatch = Stopwatch.StartNew();
         var action = frame.ValueKind == JsonValueKind.Object && frame.TryGetProperty("action", out var actionElement)
             && actionElement.ValueKind == JsonValueKind.String
@@ -176,7 +182,7 @@ public sealed class OneBotReverseWebSocketClient
         try
         {
             var request = OneBotTransportProtocol.ParseWebSocketAction(frame);
-            response = (await actionExecutor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+            response = (await actionExecutor.ExecuteAsync(request, cancellationToken, ownedFrame).ConfigureAwait(false)) with { Echo = request.Echo };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

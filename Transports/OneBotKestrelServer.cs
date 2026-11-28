@@ -57,6 +57,9 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
         builder.Logging.ClearProviders();
         builder.WebHost.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "true");
         builder.WebHost.UseUrls(options.ListenUrls.ToArray());
+        // The action parser enforces MaxRequestBodyBytes itself (with a OneBot 1413 reply); 0 means unlimited,
+        // so Kestrel's own 30 MB default must not cap large base64 media bodies first.
+        builder.WebHost.ConfigureKestrel(kestrel => kestrel.Limits.MaxRequestBodySize = null);
         var app = builder.Build();
         var server = new OneBotKestrelServer(app, actions, options, actionExecutor);
         app.UseWebSockets();
@@ -135,9 +138,10 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
         }
 
         OneBotActionRequest request;
+        WebSocketMediaFrame? frame;
         try
         {
-            request = await OneBotTransportProtocol.ParseHttpActionAsync(context.Request, action, context.RequestAborted, options.MaxRequestBodyBytes).ConfigureAwait(false);
+            (request, frame) = await OneBotTransportProtocol.ParseHttpActionFrameAsync(context.Request, action, context.RequestAborted, options.MaxRequestBodyBytes).ConfigureAwait(false);
         }
         catch (OneBotActionException exception)
         {
@@ -166,7 +170,8 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
 
         try
         {
-            var response = await actionExecutor.ExecuteAsync(request, context.RequestAborted).ConfigureAwait(false);
+            using var ownedFrame = frame;
+            var response = await actionExecutor.ExecuteAsync(request, context.RequestAborted, ownedFrame).ConfigureAwait(false);
             await WriteJsonAsync(context, response, StatusCodes.Status200OK).ConfigureAwait(false);
             LogActionResult("HTTP", remote, request.Action, response.RetCode, response.Message, stopwatch.ElapsedMilliseconds);
         }
@@ -231,7 +236,7 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
                 await connection.QueueAsync(JsonSerializer.SerializeToElement(LifecycleEvent("connect")), connectionToken).ConfigureAwait(false);
             while (connection.IsOpen && !connectionToken.IsCancellationRequested)
             {
-                JsonElement? frame;
+                WebSocketMediaFrame? frame;
                 try
                 {
                     frame = await connection.ReceiveAsync(connectionToken).ConfigureAwait(false);
@@ -243,7 +248,7 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
                     continue;
                 }
                 if (frame is null) break;
-                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleWebSocketActionAsync(connection, frame.Value, role, connectionToken)).ConfigureAwait(false);
+                await OneBotWebSocketConnection.TrackActionAsync(pending, HandleWebSocketActionAsync(connection, frame, role, connectionToken)).ConfigureAwait(false);
             }
         }
         finally
@@ -273,8 +278,10 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
         return normalizedRoot == "/" ? $"/{child}" : $"{normalizedRoot}/{child}";
     }
 
-    private async Task HandleWebSocketActionAsync(OneBotWebSocketConnection connection, JsonElement frame, OneBotWebSocketRole role, CancellationToken cancellationToken)
+    private async Task HandleWebSocketActionAsync(OneBotWebSocketConnection connection, WebSocketMediaFrame received, OneBotWebSocketRole role, CancellationToken cancellationToken)
     {
+        using var ownedFrame = received;
+        var frame = ownedFrame.Root;
         var echo = frame.ValueKind == JsonValueKind.Object && frame.TryGetProperty("echo", out var echoElement)
             ? echoElement.Clone()
             : (JsonElement?)null;
@@ -285,7 +292,7 @@ public sealed class OneBotKestrelServer : IAsyncDisposable
             if (!OneBotTransportProtocol.CanReceiveActions(role))
                 throw new OneBotActionException(StatusCodes.Status403Forbidden, 1403, "this WebSocket connection does not accept API requests");
             var request = OneBotTransportProtocol.ParseWebSocketAction(frame);
-            response = (await actionExecutor.ExecuteAsync(request, cancellationToken).ConfigureAwait(false)) with { Echo = request.Echo };
+            response = (await actionExecutor.ExecuteAsync(request, cancellationToken, ownedFrame).ConfigureAwait(false)) with { Echo = request.Echo };
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {

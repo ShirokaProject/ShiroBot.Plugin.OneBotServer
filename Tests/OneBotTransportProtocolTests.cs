@@ -11,6 +11,48 @@ namespace ShiroBot.Plugin.OneBotServer.Tests;
 public sealed class OneBotTransportProtocolTests
 {
     [TestMethod]
+    public void WebSocketMediaFrame_DecodesFragmentedAttachmentsAndKeepsFilesUntilReleased()
+    {
+        var original = new byte[24 * 1024 + 1];
+        new Random(42).NextBytes(original);
+        var base64 = Convert.ToBase64String(original);
+        base64 = base64.Insert(base64.Length / 2, @"\r\n\t ").Replace("/", @"\/");
+        var message = Encoding.UTF8.GetBytes(
+            """{"params":{"message":[{"type":"node","data":{"content":[{"type":"video","data":{"file":"BaSe64:\u002f\/""" +
+            base64 +
+            "\"" + ""","cover":"base64://AQID"}},{"type":"text","data":{"text":"base64://literal"}}]}}]},"action":"send_group_forward_msg","echo":"base64://echo"}""");
+
+        using var reader = new WebSocketMediaFrameReader();
+        for (var offset = 0; offset < message.Length; offset += 3)
+            reader.Write(message.AsSpan(offset, Math.Min(3, message.Length - offset)));
+
+        string file;
+        string cover;
+        using (var frame = reader.Complete())
+        {
+            var request = OneBotTransportProtocol.ParseWebSocketAction(frame.Root);
+            var content = request.Params["message"][0].GetProperty("data").GetProperty("content");
+            var videoData = content[0].GetProperty("data");
+            file = new Uri(videoData.GetProperty("file").GetString()!).LocalPath;
+            cover = new Uri(videoData.GetProperty("cover").GetString()!).LocalPath;
+            Assert.AreEqual("base64://literal", content[1].GetProperty("data").GetProperty("text").GetString());
+            Assert.AreEqual("base64://echo", request.Echo?.GetString());
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(file));
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(cover));
+
+
+            // Action execution can outlive its transport response after a timeout.
+            frame.Retain();
+            frame.Dispose();
+            Assert.IsTrue(File.Exists(file));
+            Assert.IsTrue(File.Exists(cover));
+        }
+
+        Assert.IsFalse(File.Exists(file));
+        Assert.IsFalse(File.Exists(cover));
+    }
+
+    [TestMethod]
     public void IsAuthorized_AcceptsBearerAndAccessToken_AndRejectsOtherValues()
     {
         var bearer = new DefaultHttpContext();

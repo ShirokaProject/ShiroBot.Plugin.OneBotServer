@@ -1,7 +1,9 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 using ShiroBot.Plugin.OneBotServer.Protocol;
 
 namespace ShiroBot.Plugin.OneBotServer.Transports;
@@ -56,6 +58,24 @@ public static class OneBotTransportProtocol
 
     public static async Task<OneBotActionRequest> ParseHttpActionAsync(HttpRequest request, string action, CancellationToken cancellationToken, int maxBodyBytes = 0)
     {
+        var (parsed, frame) = await ParseHttpActionFrameAsync(request, action, cancellationToken, maxBodyBytes, extractMedia: false).ConfigureAwait(false);
+        if (frame is null) return parsed;
+        using (frame)
+        {
+            return new OneBotActionRequest(parsed.Action,
+                parsed.Params.ToDictionary(pair => pair.Key, pair => pair.Value.Clone(), StringComparer.Ordinal),
+                parsed.Echo?.Clone());
+        }
+    }
+
+    /// <summary>
+    /// Parses an HTTP action without buffering Base64 media in memory: media strings are decoded to temporary
+    /// files as the body streams in. The returned frame owns those files and the parameter JSON; keep it alive
+    /// (and pass it to the executor) until the action has finished.
+    /// </summary>
+    internal static async Task<(OneBotActionRequest Request, WebSocketMediaFrame? Frame)> ParseHttpActionFrameAsync(
+        HttpRequest request, string action, CancellationToken cancellationToken, int maxBodyBytes = 0, bool extractMedia = true)
+    {
         if (!IsActionName(action))
             throw new OneBotActionException(StatusCodes.Status404NotFound, 1404, "action was not found");
 
@@ -75,27 +95,40 @@ public static class OneBotTransportProtocol
             if (maxBodyBytes > 0) request.Body = new LimitedReadStream(request.Body, maxBodyBytes);
             if (request.HasFormContentType)
             {
-                var form = await request.ReadFormAsync(cancellationToken).ConfigureAwait(false);
+                var formLimit = maxBodyBytes > 0 ? maxBodyBytes : int.MaxValue;
+                var form = await request.ReadFormAsync(new FormOptions
+                {
+                    ValueLengthLimit = formLimit,
+                    MultipartBodyLengthLimit = formLimit,
+                    BufferBodyLengthLimit = formLimit,
+                }, cancellationToken).ConfigureAwait(false);
                 foreach (var (key, value) in form) values[key] = ToJson(value.ToArray());
             }
             else if (IsJsonContentType(request.ContentType))
             {
-                await using var body = new MemoryStream();
-                await request.Body.CopyToAsync(body, cancellationToken).ConfigureAwait(false);
-                if (body.Length == 0) return new OneBotActionRequest(action, values, null);
-                body.Position = 0;
-                using var document = await JsonDocument.ParseAsync(body, cancellationToken: cancellationToken).ConfigureAwait(false);
-                if (document.RootElement.ValueKind != JsonValueKind.Object)
-                    throw new OneBotActionException(StatusCodes.Status400BadRequest, 1400, "JSON action parameters must be an object");
-
-                foreach (var property in document.RootElement.EnumerateObject())
+                var frame = await ReadJsonFrameAsync(request.Body, extractMedia, cancellationToken).ConfigureAwait(false);
+                if (frame is null) return (new OneBotActionRequest(action, values, null), null);
+                try
                 {
-                    if (property.NameEquals("echo")) echo = property.Value.Clone();
-                    else if (!property.NameEquals("action") && !property.NameEquals("params")) values[property.Name] = property.Value.Clone();
-                    else if (property.NameEquals("params"))
+                    var root = frame.Root;
+                    if (root.ValueKind != JsonValueKind.Object)
+                        throw new OneBotActionException(StatusCodes.Status400BadRequest, 1400, "JSON action parameters must be an object");
+
+                    foreach (var property in root.EnumerateObject())
                     {
-                        foreach (var parameter in OneBotParameters.ObjectOrEmpty(property.Value)) values[parameter.Key] = parameter.Value;
+                        if (property.NameEquals("echo")) echo = property.Value;
+                        else if (!property.NameEquals("action") && !property.NameEquals("params")) values[property.Name] = property.Value;
+                        else if (property.NameEquals("params"))
+                        {
+                            foreach (var parameter in OneBotParameters.ObjectOrEmpty(property.Value)) values[parameter.Key] = parameter.Value;
+                        }
                     }
+                    return (new OneBotActionRequest(action, values, echo), frame);
+                }
+                catch
+                {
+                    frame.Dispose();
+                    throw;
                 }
             }
             else
@@ -104,7 +137,28 @@ public static class OneBotTransportProtocol
             }
         }
 
-        return new OneBotActionRequest(action, values, echo);
+        return (new OneBotActionRequest(action, values, echo), null);
+    }
+
+    private static async Task<WebSocketMediaFrame?> ReadJsonFrameAsync(Stream body, bool extractMedia, CancellationToken cancellationToken)
+    {
+        using var reader = new WebSocketMediaFrameReader(rootIsParameters: true, extractMedia);
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            long total = 0;
+            int read;
+            while ((read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                total += read;
+                reader.Write(buffer.AsSpan(0, read));
+            }
+            return total == 0 ? null : reader.Complete();
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     public static string RoleName(OneBotWebSocketRole role) => role switch
